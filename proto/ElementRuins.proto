@@ -1,0 +1,61 @@
+import 'Msg.proto';
+package msg;
+option java_package = 'com.server.logic.socket.netmsg';// (生成Java类时包名；C#类的命名空间)
+
+
+//元素塔列表数据推送
+message ElementRuinsList_PUSH
+{
+	repeated ElementRuinsData elementRuinsDatas = 1;// 元素塔数据
+	optional int32 type = 2;// 操作类型 0-全覆盖 1-自动装备 2-全卸下(服务器透传，无逻辑处理)
+}
+
+//元素塔数据信息
+message ElementRuinsData
+{
+	required int32 id = 1;// 元素塔id
+	required bool unlock = 2;// 元素塔是否解锁
+	required int32 level = 3;// 元素塔等级
+	repeated ElementRuinsSlot slots = 4;// 槽位信息
+	required int32 getTime=5;//获得的时间
+}
+
+//元素塔升级
+message ElementRuinsLevelUp{
+	required int32 id = 1;//元素塔id
+	required int32 level = 2;//提升的等级<maxLevel
+}
+//元素塔升级数据返回
+message ElementRuinsLevelUp_S2C
+{
+	optional int32 id = 1;//元素塔id
+	optional int32 level = 2;//元素塔等级
+}
+//元素塔槽位更新
+message ElementRuinsSlotUpdate{
+	required int32 id = 1;//元素塔id
+	repeated ElementRuinsSlot slots = 2;// 槽位数据
+	optional int32 type = 3;// 操作类型 0-全覆盖 1-自动装备 2-全卸下(服务器透传，无逻辑处理)
+}
+//元素塔槽位数据更新返回
+message ElementRuinsSlotUpdate_S2C
+{
+	optional int32 id = 1;//元素塔id
+}
+// 获取元素塔关卡组
+message GetElementRuinsLevelGroupList {
+}
+
+message GetElementRuinsLevelGroupList_S2C {
+	repeated ElementRuinsLevelInfoGroup levelInfoGroups = 1;// 元素塔关卡列表
+	optional bool hasDailyReward = 2;// 是否领取过今日收菜奖励
+	optional int32 lastFloor = 3;// 昨日总层数
+}
+
+// 收菜
+message GetElementRuinsDailyReward {
+}
+
+message GetElementRuinsDailyReward_S2C {
+	optional bool hasDailyReward = 1;// 是否领取过今日收菜奖励
+}

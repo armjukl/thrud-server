@@ -1,0 +1,1106 @@
+// GS 应用层: S2C 消息构造 + 请求->处理器表.
+//
+// 客户端链路 (来自 Lua):
+//   HttpClientForLua:SendMessageUrlList(msgId, data, appendData)
+//     -> WebCommunicationHelper:SendMessage(url, uid, pfUid, token, msgId, data, appendData, ...)
+//     -> POST /AppInterface  [二进制头 + protobuf data + appendData]
+//   回包 HTTP body = protobuf msg.ReturnPackagePush {
+//       packetList: [{ packetUUid, bodyInfo: {header, bodyBytes}, packetBodyInfoS: [...] }]
+//   }
+//   native WebCommunicationHelper.HandleResult() 解 ReturnPackagePush -> UploadDataCompletedData
+//   Lua HttpClientForLua:isReceiveFromServer() 读 completedList / replenishList, 按 header 派发.
+import { log } from "./logger.js";
+import { config } from "./config.js";
+import * as pb from "./proto.js";
+import { COMMON_CONDITION_IDS } from "./data/conditions.js";
+import { GUIDE_IDS } from "./data/guides.js";
+import { MAIN_LEVEL } from "./data/mainlevels.js";
+import { LEADER } from "./data/leader.js";
+import { WEAPON } from "./data/weapon.js";
+import { WEAPON_BREAK } from "./data/weaponbreak.js";
+import { heroAttrMap, heroPower, weaponAttr, weaponPower, type AttrKV } from "./attrs.js";
+import { ITEM_VALID } from "./data/items.js";
+import { LEADER_DEBRIS } from "./data/leaderdebr.js";
+import { LEADER_QUALITY, WEAPON_GRATE } from "./data/rarity.js";
+import { poolDraw } from "./gacha.js";
+import { characterById, defaultCharacter, loadSave, saveSave, type SaveCharacter, type SaveData, type SaveWeapon } from "./save.js";
+
+export interface GsRequest {
+  msgId: number | null;
+  packetUUid: number;
+  proto: Buffer | null;
+  headerHex: string;
+  stringsEnd?: number;
+  protoStart?: number;
+  appendData?: Buffer;
+}
+
+export interface GsResponse {
+  body: Buffer;
+  pushes: Array<[number, Buffer]>;
+  /** 额外"后一包"(packetList 追加, 保证晚于主包派发). */
+  extra?: Array<[number, Buffer]>;
+  /**
+   * true 时主包改走 completedList 的单包槽 (ReturnPackageInfo.bodyInfo 是 replenish 通道,
+   * 会被 Lua 的 Ignore_Replenish_MsgID 过滤). extra 随之改走 PushMsg2Client(同样进 completedList).
+   */
+  mainInCompleted?: boolean;
+}
+
+export type GsResult = Buffer | GsResponse;
+export type GsBuilder = (req: GsRequest) => GsResult;
+
+// msg.CmdEnum 里与本流程相关的号 (proto/CmdDefine)
+export const CMD = {
+  HeartBeat: 9999,
+  PlayerLogin: 10000,
+  PlayerLoginGetInfo: 10002,
+  GetPrologue: 10003,
+  SetPrologue: 10004,
+  GetNextDayUpdateData: 10005,
+  GetRevelationInfoListPage: 10006,
+  GetWeaponListPage: 10007,
+  ClientDataOverLogin: 10100,
+  GetOpenFunctionData: 10102,
+  ChangeStep: 10073,
+  GetSignReward: 10051,
+  SetSpecialTaskProgress: 3304,
+  GetPayShopDataAfterLogin: 30304,
+  GetWaitOrderData: 40002,
+  GetPerkInfoListPage: 60003,
+  LoginOpenSmallBattlePanel: 9000007,
+  GetAllFriendInfo: 3912,
+  GetOtherPlayerInfo: 3913,
+  GetAllActivity: 21001,
+  ActivityReplayReward: 21015,
+  GetBattlePassInfoListPage: 890105,
+  GetRogueInfoListPage: 9300009,
+  GetElementRuinsLevelGroupList: 9400004,
+  CheckPlayerName: 10076,
+  ChangePlayerName: 10077,
+  ChangeSex: 10080,
+  ChangeSecretary: 10057,
+  // 战斗 (客户端 fightLua VM 跑逻辑; 游戏服只给开战数据与收结算)
+  BattleLogin: 11003,
+  BattleSettle: 11018,
+  BattleLeave: 11019,
+  StartSoloBattle: 11028,
+  CloseBattleSettle: 11031,
+  BattleLeaveFinishS2C: 11032,
+  OverMainLevel: 3004,
+  SwitchClothing: 1007,
+  UpgradeLeader: 1001,
+  SwitchWeapon: 1203,
+  GetPayShopData: 30300,
+  DataPush: 900011,
+  // 抽卡(简化)
+  SwearHero: 2000,
+  SelectSwearChange: 2001,
+  GetSwearRecord: 2002,
+  ShowItemPush: 900009, // 展示获得物品推送
+} as const;
+
+export const CMD_NAME: Record<number, string> = Object.fromEntries(
+  Object.entries(CMD).map(([k, v]) => [v, k]),
+);
+
+export const now = (): bigint => BigInt(Math.floor(Date.now() / 1000));
+
+// 新手引导信息流(服务器原样回显/落内存). 登录包 GuideInfo.guideData(字段57) 回填,
+// ChangeStep_S2C 原样回显; 否则 m_guideDataJsonStr 被清空, 引导每步重发/重启后从头开始.
+let guideData = "";
+export const getGuideData = (): string => guideData;
+
+// ---- 序章 / 创角 (服务端侧存档) ----
+// 客户端 PrologueDataMgr.CheckOver() 判"序章已完成"的两个口径:
+//   curPrologueId == 0 && LoginModule.GetFinishBeginnerProgress() > NewRoleProgress.Login(=0)
+//   curPrologueId >= lastPrologueId (ChapterPrologue_Xls 里最大 prologueId = 101014 UIMain)
+// 其中 curPrologueId 来自 GetPrologue_S2C.data(字符串转数字, 空=0),
+// GetFinishBeginnerProgress 来自 PlayerLogin_S2C.beginnerModeProgress.
+// 所以想让它**进序章**要同时改两处: beginnerModeProgress=0 + data 回一个 <101014 的值(或空).
+// 效果: 客户端不再 JumpTo(1,{isGameStart=true}) 直插大厅, 而是 PlayNext 播序章链
+//   101001 剧情1100011 -> 101002 创角 -> 101003 剧情 -> 101004 视频 -> 101005/101007 教程战
+//   -> ... -> 101014 UIMain 进大厅.
+// 走这条路进大厅时 param 不带 isGameStart, UpdateSecretaryOver 落到 PlayIdle() ——
+// 正是看板待机动作缺失的修法(旧版 beginnerModeProgress=2 直插大厅 -> HelloLogin() 把
+// helloLogin 置 true 后只有 CheckCurrentAniClip 见到 Home_Idle_01 才清, 而那段动画根本没播,
+// Animator 停在 Empty State, 于是开场动作做完就僵住).
+// 进度落盘 + 每次请求重读: 若某步资源离线取不到(视频/教程战)卡住, 直接改
+// data/save.json 里 prologue.id 为下一步(如 {"prologue":{"id":"101013"}} = 只剩进大厅)即可续播.
+export const LAST_PROLOGUE_ID = 101014;
+// 离线取不到资源的序章节点 -> 上报到它就当作已完成, 顺延下一步.
+// 逐个实测出来的(clientLog + 抓包):
+//   101002 创角面板: bundle UICreateRole 既不在 base.apk 也不在下载目录 -> 面板开不出来.
+//   101004/101009/101011/101013 视频(type=5): abIndex 里没有任何 video bundle.
+//   101005/101007 教程战(type=2): 要 StartSoloBattle_S2C 的 battleEnterInfo, 服务端还没做战斗构造.
+// 剩下的 101001/101003/101006/101008/101010/101012 剧情都能播(个别背景图缺, 只报一次 NRE 不拦路),
+// 101014 UIMain 进大厅不带 isGameStart -> UpdateSecretaryOver 走 PlayIdle() 播放看板待机.
+const PROLOGUE_SKIP = new Set(["101002", "101004", "101005", "101007", "101009", "101011", "101013"]);
+
+// 序章链是 101001..101014 线性(condition=上一个 id), 所以"下一个"= id+1.
+export function prologuePlayable(id: string): string {
+  let cur = Number(id) || 0;
+  for (let g = 0; g < 20 && PROLOGUE_SKIP.has(String(cur + 1)); g++) cur += 1;
+  return String(cur);
+}
+
+function reqStr(req: GsRequest | undefined, field: number): string {
+  if (!req?.proto) return "";
+  const f = pb.decodeFields(req.proto).find((x) => x.field === field && x.wire === 2);
+  return f && Buffer.isBuffer(f.value) ? f.value.toString("utf8") : "";
+}
+
+function reqNum(req: GsRequest | undefined, field: number): number | null {
+  if (!req?.proto) return null;
+  const f = pb.decodeFields(req.proto).find((x) => x.field === field && x.wire === 0);
+  return f ? Number(f.value) : null;
+}
+
+// 网络字节序(大端) u32
+function u32(v: number | bigint): Buffer {
+  const b = Buffer.alloc(4);
+  b.writeUInt32BE(Number(BigInt(v) & 0xffffffffn) >>> 0);
+  return b;
+}
+
+// ---- 各 S2C 消息体 ----
+function levelExp(level = 1, curExp = 0, maxExp = 100): Buffer {
+  return pb.concat(pb.vfield(6, level), pb.vfield(7, curExp), pb.vfield(8, maxExp));
+}
+
+function playerLoginS2C(): Buffer {
+  const t = now();
+  const s = loadSave();
+  return pb.concat(
+    // beginnerModeProgress: 0=未完成创角 -> 客户端进序章; 2=已完成 -> 直插大厅.
+    pb.vfield(1, s.prologue.done ? 2 : 0),
+    pb.vfield(2, s.player.uid), // uid
+    pb.sfield(3, "1"), // serverDataVersion
+    pb.sfield(4, "offline-token"), // token
+    pb.vfield(5, t - 86400n * 30n), // regDate
+    pb.vfield(6, t), // now
+    pb.bfield(7, levelExp(s.player.level, s.player.exp, s.player.maxExp)),
+  );
+}
+
+function getPrologueS2C(): Buffer {
+  const s = loadSave();
+  // data = 上次完成的步; 空=从头播. 完成态回终值 101014 让 CheckOver()=true 不再重播.
+  // 离线缺资源的节点不回(回的就是"已播到", 客户端播它的下一步).
+  return pb.sfield(2, s.prologue.done ? String(LAST_PROLOGUE_ID) : prologuePlayable(s.prologue.id));
+}
+
+function setPrologueS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const wasDone = s.prologue.done;
+  const data = reqStr(req, 3); // SetPrologue{platformId=1, platformUserId=2, data=3}
+  if (data === "0") {
+    s.prologue.done = true;
+    s.prologue.id = "";
+  } else if (data !== "") {
+    s.prologue.id = prologuePlayable(data);
+    s.prologue.done = Number(s.prologue.id) >= LAST_PROLOGUE_ID;
+  }
+  saveSave(s);
+  log("info", "prologue", `SetPrologue data="${data}" -> done=${s.prologue.done} id="${s.prologue.id}"`);
+  const ack = pb.vfield(1, 0); // SetPrologue_S2C{ required int32 errorCode=1 }
+  if (!wasDone && s.prologue.done) {
+    // 新号播完序章走的是 PrologueDataMgr.OnGetPlayerInfo 分支, 全程不自发请求登录大包,
+    // 缺 PlayerLoginGetInfo 会让进大厅后的 UITopMenu.GetStrength 索引 nil playerInfo 崩.
+    // 借这次回包的 packetBodyInfoS(推送包通道)补踢一次.
+    log("info", "prologue", "首次完成 -> 随回包推送 PlayerLoginGetInfo_S2C");
+    return { body: ack, pushes: [[CMD.PlayerLoginGetInfo, playerLoginGetInfoS2C()]] };
+  }
+  return ack;
+}
+
+function checkPlayerNameS2C(): Buffer {
+  return pb.vfield(1, 0); // CheckPlayerName_S2C{ required int32 errorCode=1 } 0=名字可用
+}
+
+function changePlayerNameS2C(req: GsRequest): Buffer {
+  const s = loadSave();
+  const nm = reqStr(req, 1); // ChangePlayerName{ required string uName=1 }
+  if (nm) {
+    s.player.name = nm;
+    saveSave(s);
+  }
+  // ChangePlayerName_S2C{ errorCode=1(注释掉了); uName=2; lastUNameTime=3; nameCode=4 }
+  return pb.concat(pb.sfield(2, s.player.name || "指挥官"), pb.vfield(3, now()));
+}
+
+function changeSexS2C(req: GsRequest): Buffer {
+  const s = loadSave();
+  const sx = reqNum(req, 1) ?? 0; // ChangeSex{ required int32 sex=1 } 0=女 1=男
+  s.player.sex = sx;
+  saveSave(s);
+  return pb.vfield(2, sx); // ChangeSex_S2C{ sex=2 } (0=女 1=男)
+}
+
+// LeaderInfo (msg.proto): 武将信息. required: id/level/exp/star/starLevel/
+// favorabilityLevel/favorabilityExp/clothingId/weaponId/signLv/perkId.
+// HeroData:SetHeroAttr 会直接读 calcPropModelInfo.attributeMap, 所以必须带上.
+// 数值全部来自存档 data/save.json 的 characters[].
+// 每个角色一把"默认式仗"实例的 onlyId (客户端按它索引已下发的武器实例). 确定性生成,
+// 重启不变; leaderInfo.weaponId 与 GetWeaponListPage 用同一个值才能对上.
+const weaponOnlyId = (leaderId: number): string => "7000000" + leaderId;
+
+// 该角色 Leader 表的默认武器配置 id (穿戴式仗).
+const weaponCfgOf = (leaderId: number): number => LEADER[leaderId]?.[0] ?? 0;
+
+// 角色终值属性 (自身等级/突破 + 穿戴武装 + 存档覆盖); 表缺失时回退占位.
+function heroAttrs(s: SaveData, c: SaveCharacter): AttrKV {
+  const w = equippedWeapon(s, c.id);
+  const m = new Map(heroAttrMap(c.id, c.level, c.breach, w.cfg, w.level, w.breach));
+  for (const [k, v] of Object.entries(c.attrs || {})) m.set(Number(k), v); // 存档覆盖: 直接改终值
+  if (!m.size) for (const [k, v] of DEFAULT_ATTRS) m.set(k, v);
+  return [...m.entries()].map(([k, v]) => [k, v] as [number, number]);
+}
+
+// 武装属性 (基础 + 等级成长); 表缺失时回退占位.
+function weaponAttrs(cfg: number, level = 1, breach = 0): AttrKV {
+  const a = [...weaponAttr(cfg, level, breach).entries()];
+  return a.length ? a : DEFAULT_ATTRS;
+}
+
+// 武器实例列表: 用存档 weapons[]; 补空 onlyId; 并保证每个角色都有一把"已装备"的默认武器.
+// 过滤掉无突破配置(WeaponBreak_Xls 缺行)的武器: 客户端 SetRedPointData_Break 会 index 到 nil 而崩,
+// 进而中断登录 InitPlayerServerInfo 后续(抽卡/成就面板不初始化).
+function weaponInstances(s: SaveData): SaveWeapon[] {
+  const list = s.weapons
+    .filter((w) => WEAPON_BREAK[w.cfg])
+    .map((w, i) => ({ ...w, onlyId: w.onlyId || "7" + (w.cfg || 0) + "-" + i }));
+  for (const c of s.characters) {
+    if (!list.some((w) => w.leaderId === c.id)) {
+      const cfg = weaponCfgOf(c.id);
+      if (WEAPON_BREAK[cfg]) list.push({ onlyId: weaponOnlyId(c.id), cfg, leaderId: c.id, level: 1, breach: 0, exp: 0, refine: 0, lock: 0, skin: 0 });
+    }
+  }
+  return list;
+}
+
+// 某角色当前穿戴的武器实例 (没有就补一把默认).
+function equippedWeapon(s: SaveData, leaderId: number): SaveWeapon {
+  return weaponInstances(s).find((w) => w.leaderId === leaderId)
+    ?? { onlyId: weaponOnlyId(leaderId), cfg: weaponCfgOf(leaderId), leaderId, level: 1, breach: 0, exp: 0, refine: 0, lock: 0, skin: 0 };
+}
+
+function leaderInfo(s: SaveData, c: SaveCharacter): Buffer {
+  const w = equippedWeapon(s, c.id);
+  const lm = LEADER[c.id];
+  const wm = WEAPON[w.cfg];
+  const shooting = wm ? wm[0] : 0;
+  const weaponSkills = wm ? wm[1] : [];
+  return pb.concat(
+    pb.vfield(1, c.id),   // id
+    pb.vfield(2, c.level), // level
+    pb.vfield(3, c.exp),   // exp
+    pb.vfield(4, c.star),  // star
+    pb.vfield(5, c.starLevel), // starLevel
+    pb.vfield(6, c.favorabilityLevel), // favorabilityLevel
+    pb.vfield(7, c.favorabilityExp),   // favorabilityExp
+    pb.vfield(8, c.clothingId), // clothingId
+    pb.sfield(9, w.onlyId),     // weaponId = 穿戴式仗的 onlyId (required string)
+    pb.bfield(10, battlePropModelInfo(heroPower(c.id, c.level, c.breach, w.cfg), heroAttrs(s, c))), // calcPropModelInfo
+    ...weaponSkills.map((id) => pb.bfield(11, talentSkill(id))), // talentSkills=11
+    pb.vfield(12, c.breach),    // breachLevel=12 (缺则 LeaderAttrChangedHandler 误判去开突破界面)
+    ...(lm
+      ? [
+          pb.bfield(17, activeSkill(shooting, 1, 1)), // activeSkills=17 武器射击
+          pb.bfield(17, activeSkill(lm[1], 1, 2)),    // 主动
+          pb.bfield(17, activeSkill(lm[2], 1, 3)),    // 极奏
+        ]
+      : []),
+    pb.vfield(22, c.signLv),    // signLv (required)
+    pb.sfield(25, c.perkId),    // perkId (required string)
+  );
+}
+
+// 背包道具 -> Part{ required id=1; required num=2; required uuid=4(string) }. 只发 Items_Xls 里
+// 存在的 id(type=2 道具), 否则客户端 ItemData:Init 对缺行 id 无保护地 index -> 崩.
+function partsBody(s: SaveData): Buffer[] {
+  const out: Buffer[] = [];
+  for (const [k, n] of Object.entries(s.items)) {
+    const id = Number(k);
+    if (!ITEM_VALID.has(id) || !(n > 0)) continue;
+    out.push(pb.concat(pb.vfield(1, id), pb.vfield(2, n), pb.sfield(4, k)));
+  }
+  return out;
+}
+
+// 货币 -> MoneyPart{ required int64 currentNum=1; required int32 itemId=2 }
+function moneyPartBody(s: SaveData): Buffer[] {
+  return Object.entries(s.money)
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => pb.concat(pb.vfield(1, Math.floor(n)), pb.vfield(2, Number(k))));
+}
+
+// 已拥有角色战装 -> ClothingInfo{ repeated int32 clothingIdSet=1 } (空则整字段省略, 客户端 #nil 会崩).
+function clothingInfoBody(s: SaveData): Buffer | null {
+  const ids = [...new Set(s.cloths)].sort((a, b) => a - b);
+  return ids.length ? pb.concat(...ids.map((id) => pb.vfield(1, id))) : null;
+}
+
+// 已拥有武装涂装 -> WeaponSkinInfo{ repeated int32 existIdSet=1 }.
+function weaponSkinInfoBody(s: SaveData): Buffer | null {
+  const ids = [...new Set(s.wskin)].sort((a, b) => a - b);
+  return ids.length ? pb.concat(...ids.map((id) => pb.vfield(1, id))) : null;
+}
+
+// 主线通关 -> MainLevelInfo{ required id=1; stars=2; todayAttackNum=3; attackNum=4; lastAttackTime=5; passTime=10 }.
+function mainLevelInfoEntries(s: SaveData): Buffer[] {
+  const now = BigInt(Date.now());
+  return Object.entries(s.levels).map(([k, stars]) => pb.concat(
+    pb.vfield(1, Number(k)),
+    ...(stars || []).map((v) => pb.vfield(2, v)),
+    pb.vfield(3, 1), pb.vfield(4, 1), pb.vfield(5, now), pb.vfield(10, 0),
+  ));
+}
+
+// 训练本通关 -> TrainLevelInfo{ required id=1; todayAttackNum=2; attackNum=3; lastAttackTime=4; required passTime=8 }.
+function trainLevelInfoBody(s: SaveData): Buffer[] {
+  const now = BigInt(Date.now());
+  return s.trainLevels.map((id) => pb.concat(
+    pb.vfield(1, id), pb.vfield(2, 1), pb.vfield(3, 1), pb.vfield(4, now), pb.vfield(8, 0),
+  ));
+}
+
+// PlayerLoginGetInfo_S2C (10002): 登录后拉全部玩家数据.
+// 三个 required 字段 (refreshTimes=65 / smallBattleIsOver=89 / abyssFrontIsOver=90) 必须给,
+// 否则 Lua 端 pbNew.decode 会因缺 required 报错.
+export function playerLoginGetInfoS2C(): Buffer {
+  const t = now();
+  const s = loadSave();
+  const sec = s.player.secretary;
+  // 看板角色必须在武将列表里(否则 GetHeroDataById 返回 nil), 缺就补一个默认条目.
+  const ids = s.characters.map((c) => c.id);
+  if (!ids.includes(sec)) ids.push(sec);
+  const leaders = [...new Set(ids)];
+  const clothingInfo = clothingInfoBody(s);
+  const weaponSkinInfo = weaponSkinInfoBody(s);
+  return pb.concat(
+    // monthSign=80 (SignInfo): SignInMonthlyManager.InitData(msg.monthSign) 的唯一数据来源,
+    // 缺它 -> InitData(nil) -> 月签到面板回到"第 1 天", 与 GetSignReward 的回显自相矛盾.
+    pb.bfield(80, signInfoBody()),
+    // swearInfo=20 (SwearInfo): 抽卡状态(已抽过的池). 空消息也可, 客户端 SetData({}).
+    pb.bfield(20, swearInfoBody(s)),
+    // leaderInfo=4 (repeated LeaderInfo): HeroDataManager.Init 直接 #leaderData,
+    // 缺字段会 nil -> ResetHeroDataDic 报错, 卡在登录.
+    ...leaders.map((id) => pb.bfield(4, leaderInfo(s, characterById(s, id)))),
+    pb.vfield(7, t),             // nowTime
+    pb.vfield(54, t),            // lastLoginTime
+    pb.vfield(65, 4),            // refreshTimes (required) 跨天刷新小时
+    pb.vfield(76, t + 604800n),  // nextWeekRefreshTime
+    pb.vfield(78, s.player.shipStrength),    // shipStrength
+    pb.vfield(79, s.player.maxShipStrength), // maxShipStrength
+    pb.vfield(88, 1),            // httpStabilityId
+    pb.vfield(89, 0),            // smallBattleIsOver (required)
+    pb.vfield(90, 0),            // abyssFrontIsOver (required)
+    // guideInfo=57 (GuideInfo): 回填已完成的新手引导流, 否则每次登录引导从头开始.
+    // GuideInfo{ optional string guideData=1; repeated int32 forceGuideStep=2 }
+    pb.bfield(57, pb.concat(
+      pb.sfield(1, guideData),
+      // forceGuideStep: 强制跳过全部新手引导(避免引导遮罩卡死大厅点击).
+      ...GUIDE_IDS.map((id) => pb.vfield(2, id)),
+    )),
+    pb.vfield(95, t + 2592000n), // nextMonthRefreshTime
+    pb.vfield(96, t + 86400n),   // nextDayRefreshTime
+    // serverInfos=14 (repeated ServerInfo): 客户端 NetWorkManager 需要 type=3 聊天服, 否则
+    // GetServerInfoByType(3) 返回 nil -> NetWorkManager:56 报错 (每 15s 一次).
+    pb.bfield(14, pb.concat(
+      pb.vfield(1, 1), pb.vfield(2, 2), pb.sfield(3, "23.147.232.29"), pb.vfield(4, 19005), pb.vfield(5, 1),
+      pb.vfield(1, 2), pb.vfield(2, 3), pb.sfield(3, "23.147.232.29"), pb.vfield(4, 19005), pb.vfield(5, 1),
+    )),
+    // weaponInfos=32 (repeated WeaponInfo): 式仗实例集合(与 GetWeaponListPage 同源).
+    ...weaponInstances(s).map((w) => pb.bfield(32, weaponInfoFromInst(w))),
+    // parts=12 (repeated Part): 背包道具; moneyPart=62 (repeated MoneyPart): 货币.
+    ...partsBody(s).map((p) => pb.bfield(12, p)),
+    ...moneyPartBody(s).map((m) => pb.bfield(62, m)),
+    // clothingInfo=41 (角色战装/皮肤); weaponSkinInfo=45 (武装涂装). 空则整字段省略.
+    ...(clothingInfo ? [pb.bfield(41, clothingInfo)] : []),
+    ...(weaponSkinInfo ? [pb.bfield(45, weaponSkinInfo)] : []),
+    // mainLevelInfo=63 (主线通关) / trainLevelInfo=64 (训练本通关).
+    ...mainLevelInfoEntries(s).map((m) => pb.bfield(63, m)),
+    ...trainLevelInfoBody(s).map((m) => pb.bfield(64, m)),
+    // cdnInfo=55 (repeated ProtoHashInt2String): PlayerDataManager.SetCDNAddressList 直接
+    // pairs(cdnInfo), 缺字段会 bad argument -> 整个登录回调中断.
+    pb.bfield(55, pb.concat(pb.vfield(1, 1), pb.sfield(2, "https://le1-prod-bili-api-thrud.bilibiligame.net"))),
+    // playerLiveInfo=58 (PlayerLiveInfo): SetPlayerInfo 缺它会 return, 之后
+    // SetPlayerShowInfo 里 playerInfo 仍是 nil -> PlayerDataManager:528 报错, 进不了主城.
+    pb.bfield(58, pb.concat(
+      pb.vfield(1, s.player.uid),                 // uid
+      pb.sfield(2, s.player.name || "指挥官"),     // uName
+      pb.sfield(3, ""),                     // nameCode
+      pb.vfield(4, s.player.exp),           // exp
+      pb.vfield(5, s.player.level),         // level
+      pb.vfield(6, s.player.sex || 0),      // sex
+      pb.vfield(7, 0),                     // headId
+      pb.vfield(8, 1),                     // serverId
+      pb.sfield(9, "bili"),                // platformId
+      pb.sfield(10, "382030473"),          // platformUid
+      pb.vfield(11, 0),                    // languageId
+      pb.vfield(12, 0),                    // birthday (required)
+      pb.vfield(13, 0),                    // lastBirthdayTime (required)
+      pb.sfield(14, ""),                   // autograph (required)
+      pb.vfield(15, sec),                  // secretary = 看板角色 leaderId (required)
+      pb.vfield(16, t),                    // regDate (required)
+      pb.vfield(17, s.player.strength),    // strength
+      pb.vfield(18, s.player.maxStrength), // maxStrength
+      pb.vfield(19, t),                    // lastStrengthTime
+    )),
+    // taskProgress=47 (TaskProgressInfo): 必须给 chapterIndex/dayGroupIndex.
+    // 缺省 0 会让 TaskDataMgr 把 144 条条件=3100(PatrolLevel) 的任务塞进
+    // mainTaskData/dailyTaskData, TaskTools.GetTaskProgress -> PatrolDataManager
+    // 对 nil 的 patrolLevelInfo 做 pairs -> 崩. 选没有乌啦啦任务的章节(101)与日常分组(10001).
+    pb.bfield(47, pb.concat(
+      pb.vfield(1, 0),      // dayTaskPoint (required)
+      pb.vfield(3, 101),    // chapterIndex (required)
+      pb.vfield(4, 10001),  // dayGroupIndex (required)
+      pb.vfield(5, 0),      // weekTaskPoint (required)
+    )),
+  );
+}
+
+// ---- 月签到 (SignInMonthlyManager / UISignInMonthlyCtrl) ----
+// SignInfo{1=monthGetSignRewardTimes 本月已领天数, 2=lastGetSignRewardTime, 3=days 本次可领的第几天}
+// 客户端凭 days > monthGetSignRewardTimes 判"今天还能签" -> 弹面板. 所以当天已签时必须 days==times,
+// 否则每次进大厅都弹(旧版踩过: 恒回 times+1 -> 每次弹、永远"第 1 天"). 状态落存档, 跨自然月清零.
+const DAY = 86400, TZ8 = 8 * 3600;
+const signDayIdx = (): number => Math.floor((Number(now()) + TZ8) / DAY);
+const signMonthKey = (): number => { const d = new Date(Number(now()) * 1000); return d.getUTCFullYear() * 12 + d.getUTCMonth() + 1; };
+
+// 跨月归零; 返回是否改动了存档(需要回写).
+function signRoll(s: SaveData): boolean {
+  const mk = signMonthKey();
+  if (s.signin.month !== mk) { s.signin = { month: mk, times: 0, day: -1, lastTime: 0 }; return true; }
+  return false;
+}
+
+export function signInfoBody(): Buffer {
+  const s = loadSave();
+  if (signRoll(s)) saveSave(s);
+  const signedToday = s.signin.day === signDayIdx();
+  return pb.concat(
+    pb.vfield(1, s.signin.times),                          // 本月已签天数
+    pb.vfield(2, s.signin.lastTime),                       // 上次签到时间
+    pb.vfield(3, s.signin.times + (signedToday ? 0 : 1)),  // 本次可领第几天(当天已签 = times, 不再弹)
+  );
+}
+
+function getSignRewardS2C(): Buffer {
+  const s = loadSave();
+  let dirty = signRoll(s);
+  const today = signDayIdx();
+  if (s.signin.day !== today) {                            // 一天只签一次, 跨天才推进
+    s.signin.times += 1;
+    s.signin.day = today;
+    s.signin.lastTime = Number(now());
+    dirty = true;
+  }
+  if (dirty) saveSave(s);
+  // GetSignReward_S2C{optional int32 monthGetSignRewardTimes=2; lastGetSignRewardTime=3; Rewards rewards=4}
+  return pb.concat(pb.vfield(2, s.signin.times), pb.vfield(3, s.signin.lastTime), pb.bfield(4, Buffer.alloc(0)));
+}
+
+function getNextDayUpdateDataS2C(): Buffer {
+  const t = Number(now());
+  const dayEdge = (Math.floor((t + TZ8) / DAY) + 1) * DAY - TZ8;      // 下一个 4:00(UTC+8)
+  const d = new Date(t * 1000);
+  const firstNext = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
+  return pb.concat(
+    pb.vfield(12, dayEdge + (7 - ((firstNext.getUTCDay() + 6) % 7)) * DAY - TZ8), // nextWeekRefreshTime
+    pb.bfield(13, signInfoBody()),                                               // monthSign
+    pb.vfield(17, Math.floor(firstNext.getTime() / 1000) - TZ8),                 // nextMonthRefreshTime
+    pb.vfield(19, dayEdge),                                                      // nextDayRefreshTime
+  );
+}
+
+function getAllActivityS2C(req: GsRequest): Buffer {
+  // GetAllActivity_s2c{ required int32 activityVersion=1 } —— 必须回显请求里的版本号,
+  // 否则 ActivityDataMgr.CheckVersionChange 判版本变化 -> 清数据 + 再发 GetAllActivity (死循环).
+  const f = req?.proto ? pb.decodeFields(req.proto).find((x) => x.field === 1) : null;
+  return pb.vfield(1, Number(f?.value ?? 0));
+}
+
+function getOtherPlayerInfoS2C(req: GsRequest): Buffer {
+  // GetOtherPlayerInfo_S2C{ repeated friendInfoList=1; required int32 type=2 } —— type 必填, 回显请求的
+  const f = req?.proto ? pb.decodeFields(req.proto).find((x) => x.field === 2) : null;
+  return pb.vfield(2, Number(f?.value ?? 1));
+}
+
+// ---- 进主城前的串行拉取 (PlayerMsg.MsgListBeforeEnterMainCity) ----
+// 客户端每收到一个回包才会发下一个, 任何一个没有回包都会把加载界面卡住.
+function getPayShopDataAfterLoginS2C(): Buffer {
+  // GetPayShopDataAfterLogin_S2C{ required PayShopData payShopData=1 }
+  // PayShopData{ required int64 payConfVersion=5 }
+  return pb.bfield(1, pb.vfield(5, 1));
+}
+
+function getWaitOrderDataS2C(): Buffer {
+  return Buffer.alloc(0); // GetWaitOrderData_S2C{ repeated string idS=1 }
+}
+
+function loginOpenSmallBattlePanelS2C(): Buffer {
+  // LoginOpenSmallBattlePanel_S2C{ required int32 state=1; repeated SmallBattleState=2 }
+  return pb.vfield(1, 0);
+}
+
+function getWeaponListPageS2C(req: GsRequest): Buffer {
+  // GetWeaponListPage_S2C{ repeated WeaponInfo weaponInfos=1; required int32 page=2; required bool next=3 }
+  // 每个角色下发一把默认式仗实例(客户端 WeaponDataManager 只认服务端下发的实例).
+  const s = loadSave();
+  const page = reqNum(req, 1) ?? 0;
+  const infos = weaponInstances(s).map(weaponInfoFromInst);
+  log("info", "weapon", `GetWeaponListPage page=${page} -> ${infos.length} 把式仗`);
+  return pb.concat(
+    ...infos.map((w) => pb.bfield(1, w)), // weaponInfos
+    pb.vfield(2, page),                   // page (required)
+    pb.vfield(3, 0),                      // next (required bool)
+  );
+}
+
+function getPerkInfoListPageS2C(): Buffer {
+  // GetPerkInfoListPage_S2C{ repeated perkInfo=1; required int32 page=2; required bool next=3 }
+  return pb.concat(pb.vfield(2, 1), pb.vfield(3, 0));
+}
+
+function getRevelationInfoListPageS2C(): Buffer {
+  // GetRevelationInfoListPage_S2C{ repeated revelationInfo=1; required int32 page=2; required bool next=3 }
+  return pb.concat(pb.vfield(2, 1), pb.vfield(3, 0));
+}
+
+function getOpenFunctionDataS2C(): Buffer {
+  // GetOpenFunctionData_S2C{ repeated int32 conditionSet=1 }
+  // 离线新号: 一次把全部 condition id 都标为已解锁(等价于真服随教程/关卡逐步推送的结果).
+  // 客户端 FuncTab 只内建 0(永久锁)/1(永久开)/5001(依赖链), type 1001(等级)/3001(通关)
+  // 及其余通用类型都回落到 unLock_list[conditionId]; 空集时 unLock_list 恒空 -> 主城按钮全锁.
+  return pb.concat(...COMMON_CONDITION_IDS.map((id) => pb.vfield(1, id)));
+}
+
+function changeStepS2C(req: GsRequest): Buffer {
+  // ChangeStep{ required string guideData=1; optional int32 completedId=2 } -> ChangeStep_S2C{ optional string guideData=1 }
+  // 真服语义: 存下客户端上报的全量引导流并原样回显, 登录时再经 GuideInfo 回填.
+  if (req?.proto) {
+    const f = pb.decodeFields(req.proto).find((x) => x.field === 1 && x.wire === 2);
+    if (f && Buffer.isBuffer(f.value)) guideData = f.value.toString("utf8");
+  }
+  return pb.sfield(1, guideData);
+}
+
+function clientDataOverLoginS2C(): Buffer {
+  return Buffer.alloc(0); // ClientDataOverLogin_S2C{}
+}
+
+function changeSecretaryS2C(req: GsRequest): Buffer {
+  const id = reqNum(req, 1) ?? 0; // ChangeSecretary{ required int32 secretary=1 }
+  if (id) {
+    const s = loadSave();
+    s.player.secretary = id;
+    // 新看板要能在 leaderInfo 里拿到模型/立绘, 不在列表就补一个默认条目.
+    if (!s.characters.some((c) => c.id === id)) s.characters.push(defaultCharacter(id));
+    saveSave(s);
+  }
+  return pb.vfield(2, id); // ChangeSecretary_S2C{ secretary=2 } 客户端靠回显改本地 playerInfo.secretary
+}
+
+// ---- 战斗 ----
+// 战斗逻辑在客户端独立的 fightLua VM(liblua54.so) 里跑; 游戏服侧的职责只有两件:
+//   开战前发 battleEnterInfo(战场初始数据) + 收结算(11018).
+// 战场内 12xxx 的实时同步走独立「战斗服」(ServerInfo.serverType=2), 由我们自己的 KCP 网关
+// 一并承接(网关按 msgId 派发, 不分主/战). 这里先把 11028 这条「进战斗」最小闭环打通,
+// 具体字段按 proto/msg.proto:BattleEnterInfo + 抓到的真实请求构造, 之后按客户端日志迭代.
+export const BATTLE_SERVER_TYPE = 2; // ServerInfo.serverType: 2=战斗服
+
+// 战斗单位属性 (CalcPropModelInfo): attributeMap=1 repeated ProtoHashInt2Float{key=1,value=2 double}
+// key 约定: 100=hp 101=atk 102=def 103=en 104=crit (与旧版实现回退口径一致).
+// TODO: 数值目前是占位, 待从客户端 Attribute 表按等级/突破算真值.
+function battlePropModelInfo(capability: number, attrs: Array<[number, number]>): Buffer {
+  return pb.concat(
+    pb.vfield(3, Math.round(capability)), // capability
+    ...attrs.map(([k, v]) => pb.bfield(1, pb.concat(pb.vfield(1, k), pb.dblfield(2, v)))), // attributeMap
+  );
+}
+
+const DEFAULT_ATTRS: Array<[number, number]> = [[100, 1000], [101, 100], [102, 50], [103, 100], [104, 0]];
+
+// WeaponInfo (msg.proto): 武装(式仗)实例. required: id/leaderId/exp/level/breachLevel/onlyId/getTime/
+// defleaderId/skinId/lockState/recastingTime/recastingSkillTime —— 一个都不能缺, 否则 Lua 解码报错.
+function weaponInfoFromInst(w: SaveWeapon): Buffer {
+  return pb.concat(
+    pb.vfield(1, w.cfg),                    // id (配置id, required)
+    pb.vfield(2, w.leaderId),               // leaderId (required)
+    pb.vfield(3, w.exp),                    // exp (required)
+    pb.vfield(4, w.level),                  // level (required)
+    pb.vfield(5, w.breach),                 // breachLevel (required)
+    pb.sfield(6, w.onlyId),                 // onlyId (required string)
+    pb.bfield(7, battlePropModelInfo(weaponPower(w.cfg, w.level, w.breach), weaponAttrs(w.cfg, w.level, w.breach))), // calcPropModelInfo
+    pb.vfield(8, 1649992649),               // getTime (required)
+    pb.vfield(9, w.leaderId),               // defleaderId (required)
+    pb.vfield(10, w.skin),                  // skinId (required)
+    pb.vfield(11, w.lock),                  // lockState (required)
+    pb.vfield(12, w.refine),                // refineLevel
+    pb.vfield(19, 0),                       // recastingTime (required)
+    pb.vfield(20, 0),                       // recastingSkillTime (required)
+  );
+}
+
+// ActiveSkillInfo{ required id/level/type } type: 1=主动... 旧版口径: 1=武器射击(shootingtype) 2=主动 3=极奏
+function activeSkill(id: number, level: number, type: number): Buffer {
+  return pb.concat(pb.vfield(1, id), pb.vfield(2, level), pb.vfield(3, type));
+}
+
+// TalentSkill{ required id/level/state } —— 来自武器 weaponSkillId.
+function talentSkill(id: number): Buffer {
+  return pb.concat(pb.vfield(1, id), pb.vfield(2, 1), pb.vfield(3, 1), pb.vfield(4, 1));
+}
+
+// LeaderBattleInfo (msg.proto): 战斗所需的武将数据; 基础数值取自存档, 武器/技能 id 取自客户端表
+// (data/leader.ts, data/weapon.ts). required 只有 id; weapon/activeSkills/talentSkills 供 Core 建单位.
+function leaderBattleInfo(s: SaveData, c: SaveCharacter): Buffer {
+  const lm = LEADER[c.id];
+  const w = equippedWeapon(s, c.id);
+  const wm = WEAPON[w.cfg];
+  const shooting = wm ? wm[0] : 0;
+  const weaponSkills = wm ? wm[1] : [];
+  return pb.concat(
+    pb.vfield(1, c.id),   // id (required)
+    pb.vfield(2, c.level),
+    pb.vfield(3, c.exp),
+    pb.vfield(4, c.star),
+    pb.vfield(5, c.starLevel),
+    pb.vfield(6, c.favorabilityLevel),
+    pb.vfield(7, c.favorabilityExp),
+    pb.vfield(8, c.clothingId),
+    pb.bfield(9, weaponInfoFromInst(w)), // weapon
+    pb.bfield(10, battlePropModelInfo(heroPower(c.id, c.level, c.breach, w.cfg), heroAttrs(s, c))), // calcPropModelInfo
+    ...weaponSkills.map((id) => pb.bfield(11, talentSkill(id))), // talentSkills
+    ...(lm
+      ? [
+          pb.bfield(12, activeSkill(shooting, 1, 1)), // 武器射击
+          pb.bfield(12, activeSkill(lm[1], 1, 2)),    // 主动
+          pb.bfield(12, activeSkill(lm[2], 1, 3)),    // 极奏
+        ]
+      : []),
+    pb.vfield(14, c.signLv),  // signLv
+    pb.dblfield(16, heroPower(c.id, c.level, c.breach, w.cfg)), // capability
+  );
+}
+
+// 从请求里解 StartSoloBattle.leaderSquadInfo(3).leaderSet(2)[].leaderId(2) —— 客户端要上场的武将.
+function squadLeaderIds(req: GsRequest): number[] {
+  if (!req?.proto) return [];
+  const squad = pb.decodeFields(req.proto).find((x) => x.field === 3 && x.wire === 2);
+  if (!squad || !Buffer.isBuffer(squad.value)) return [];
+  const ids: number[] = [];
+  for (const f of pb.decodeFields(squad.value)) {
+    if (f.field === 2 && f.wire === 2 && Buffer.isBuffer(f.value)) {
+      const lid = pb.decodeFields(f.value).find((x) => x.field === 2 && x.wire === 0);
+      if (lid) ids.push(Number(lid.value));
+    }
+  }
+  return ids;
+}
+
+// BattlePlayerInfo: 单个玩家的战斗数据(武将列表 + 当前出战武将).
+function battlePlayerInfo(s: SaveData, leaderIds: number[]): Buffer {
+  const leaders = leaderIds.length ? leaderIds : s.characters.map((c) => c.id);
+  return pb.concat(
+    pb.vfield(1, s.player.uid),                 // playerId (required)
+    pb.sfield(2, s.player.name || "指挥官"),     // name (required)
+    pb.vfield(3, s.player.level),               // level (required)
+    pb.vfield(4, leaders[0] ?? 0),              // curLeaderId (required)
+    ...leaders.map((id) => pb.bfield(5, leaderBattleInfo(s, characterById(s, id)))), // leaders
+    pb.vfield(7, 0),                            // playerIndex
+  );
+}
+
+// 客户端 Core 用 levelInstanceId 查 NewLevelInstance 表, 用 levelStageId 查 NewLevelStage.
+// 主线关卡(MainLevel.type=1): levelInstanceId = MainLevel.levelId, levelStageId = MainLevel.stageLevel.
+// 给成"关卡自身 id"会查不到 -> FightClientLua StartLoading 拿 nil -> 卡在进战斗加载.
+// 数据表见 data/mainlevels.ts (从客户端 Lua 反解).
+const BATTLE_NET_INSTANCE_ID = 2872; // 服务器战斗副本实例 id(旧版实现固定值, 客户端不据此查表)
+
+// 结算(OverMainLevel)里 battleId 必填, 但请求不带关卡 id -> 记下最近一次 StartSoloBattle 的关卡.
+let lastBattleLevelId = 0;
+let battleUniqueSeq = 1;
+
+function resolveLevelInstance(levelId: number): { levelInstanceId: number; levelStageId: number; known: boolean } {
+  const m = MAIN_LEVEL[levelId];
+  if (m) return { levelInstanceId: m[0], levelStageId: m[1], known: true };
+  return { levelInstanceId: levelId, levelStageId: 1, known: false };
+}
+
+// BattleEnterInfo (msg.proto): 战场初始数据. 五个 required + teamCapability(double) 必给.
+function battleEnterInfo(req: GsRequest): Buffer {
+  const s = loadSave();
+  const levelId = reqNum(req, 1) ?? 0;     // StartSoloBattle.battleId = 关卡行 id (MainLevel.id)
+  const battleType = reqNum(req, 2) ?? 1;  // BattleType
+  const leaderIds = squadLeaderIds(req);
+  const { levelInstanceId, levelStageId, known } = resolveLevelInstance(levelId);
+  if (!known) log("warn", "battle", `level=${levelId} 不在 MainLevel 表 -> levelInstanceId 回退用关卡id(可能卡加载)`);
+  const capability = (leaderIds.length || s.characters.length || 1) * 100;
+  const seed = (Date.now() >>> 0) & 0x7fffffff;
+  return pb.concat(
+    pb.vfield(1, BATTLE_NET_INSTANCE_ID), // battleId (服务器副本实例id)
+    pb.vfield(2, levelInstanceId),        // levelInstanceId (NewLevelInstance 键, required)
+    pb.vfield(3, levelStageId),           // levelStageId (required)
+    pb.vfield(4, battleType),             // battleType (required)
+    pb.vfield(5, levelId),                // levelId (关卡行 id, required)
+    pb.bfield(6, battlePlayerInfo(s, leaderIds)), // battlePlayerInfo (repeated)
+    pb.vfield(7, 1),                      // indieGame = true
+    pb.vfield(10, seed),                  // randomSeed
+    pb.dblfield(11, capability),          // teamCapability (required double)
+    pb.sfield(12, "1"),                   // customParams[0]
+    pb.vfield(14, seed),                  // randomSecretKey (战斗收尾算 MD5 用, 缺了报 "randomSecretKey nil")
+  );
+}
+
+// StartSoloBattle_S2C{ required bool result=1; required BattleEnterInfo battleEnterInfo=2; optional ServerInfo server=3 }
+function startSoloBattleS2C(req: GsRequest): Buffer {
+  const s = loadSave();
+  const battleId = reqNum(req, 1);
+  const battleType = reqNum(req, 2);
+  if (battleId) lastBattleLevelId = battleId;
+  const leaderIds = squadLeaderIds(req);
+  // 战斗服地址: 指向本进程的 KCP 网关(它同样收 UDP 战斗消息). 战场内 12xxx 同步尚未实现,
+  // 先把地址给出去让客户端能连; 真实战斗服行为待后续迭代.
+  const server = pb.concat(
+    pb.vfield(1, config.server.serverId),   // serverId
+    pb.vfield(2, BATTLE_SERVER_TYPE),        // serverType=2 战斗服
+    pb.sfield(3, config.server.publicHost),  // serverIP
+    pb.vfield(4, config.gateway.port),       // socketPort
+    pb.vfield(5, 1),                         // serverVersion
+  );
+  log("info", "battle", `StartSoloBattle battleId=${battleId} type=${battleType} leaders=[${leaderIds.join(",")}] uid=${s.player.uid} -> battleEnterInfo`);
+  return pb.concat(
+    pb.vfield(1, 1),       // result=true
+    pb.bfield(2, battleEnterInfo(req)), // battleEnterInfo
+    pb.bfield(3, server),  // server
+  );
+}
+
+// BattleLogin_S2C{ required int32 kcpConvId=1; required string kcpIp=2; required int32 kcpPort=3 }
+// 战斗服登录: 直接把我们的 KCP 网关当作战斗服的 KCP 端点回给客户端.
+function battleLoginS2C(req: GsRequest): Buffer {
+  log("info", "battle", `BattleLogin uid=${reqNum(req, 1)} -> kcp ${config.server.publicHost}:${config.gateway.port}`);
+  return pb.concat(
+    pb.vfield(1, 1),                        // kcpConvId
+    pb.sfield(2, config.server.publicHost), // kcpIp
+    pb.vfield(3, config.gateway.port),      // kcpPort
+  );
+}
+
+// ---- 战斗结算 ----
+// 客户端打完发 3004 OverMainLevel{result, starArray, fightPar.attackTime}; 必须回 OverMainLevel_S2C
+// (required: uniqueId/battleId/passTime/playerInfo). 缺 playerInfo -> 结算面板
+// UIBattleSettlementNewMainLevel:144 索引 nil 崩、退不出战斗; 缺 uniqueId -> UIBattleMsg.CheckSameUniqueId
+// 报"没有结算数据". 关卡 id 请求里没有, 用最近一次 StartSoloBattle 记下的.
+function reqNums(req: GsRequest | undefined, field: number): number[] {
+  if (!req?.proto) return [];
+  return pb.decodeFields(req.proto).filter((x) => x.field === field && x.wire === 0).map((x) => Number(x.value));
+}
+
+// 取嵌套 message(req[outer][inner]) 的 varint 值.
+function nestedNum(req: GsRequest | undefined, outer: number, inner: number): number | null {
+  if (!req?.proto) return null;
+  const f = pb.decodeFields(req.proto).find((x) => x.field === outer && x.wire === 2);
+  if (!f || !Buffer.isBuffer(f.value)) return null;
+  const g = pb.decodeFields(f.value).find((x) => x.field === inner && x.wire === 0);
+  return g ? Number(g.value) : null;
+}
+
+// OverSoloPlayerInfo{ required oldExp/oldLevel/newExp/newLevel }
+function overSoloPlayerInfo(s: SaveData): Buffer {
+  return pb.concat(
+    pb.vfield(1, s.player.exp),   // oldExp
+    pb.vfield(2, s.player.level), // oldLevel
+    pb.vfield(3, s.player.exp),   // newExp
+    pb.vfield(4, s.player.level), // newLevel
+  );
+}
+
+// MainLevelInfo{ required id/passTime }
+function mainLevelInfoBody(id: number, stars: number[], passTime: number): Buffer {
+  return pb.concat(
+    pb.vfield(1, id),                    // id (required)
+    ...stars.map((v) => pb.vfield(2, v)),// stars
+    pb.vfield(3, 1),                     // todayAttackNum
+    pb.vfield(4, 1),                     // attackNum
+    pb.vfield(5, BigInt(Date.now())),    // lastAttackTime (ms)
+    pb.vfield(10, passTime),             // passTime (required)
+  );
+}
+
+function overMainLevelS2C(req: GsRequest): Buffer {
+  const s = loadSave();
+  const result = reqNum(req, 1) ?? 0;        // 0无/1平/2胜/3负
+  const win = result === 2;
+  const stars = reqNums(req, 2);
+  const passTime = nestedNum(req, 3, 5) ?? 0; // fightPar.attackTime
+  const levelId = lastBattleLevelId;
+  const uniqueId = (Date.now() % 0x3fffffff) + battleUniqueSeq++;
+  // 通关落盘: 把本关写入存档 levels, 重登仍保留(否则"打完这关"只活在客户端本地, 重登又变没打).
+  if (win && levelId) {
+    const prev = s.levels[String(levelId)] || [];
+    s.levels[String(levelId)] = [...new Set([...prev, ...stars])].sort((a, b) => a - b);
+    saveSave(s);
+  }
+  log("info", "battle", `OverMainLevel level=${levelId} result=${result} stars=[${stars.join(",")}] passTime=${passTime} uniqueId=${uniqueId}`);
+  return pb.concat(
+    pb.vfield(1, uniqueId),                 // uniqueId (required)
+    pb.vfield(2, levelId),                  // battleId (required)
+    pb.vfield(3, win ? 1 : 0),              // result
+    pb.vfield(6, passTime),                 // passTime (required)
+    pb.bfield(7, overSoloPlayerInfo(s)),    // playerInfo (required)
+    pb.bfield(8, mainLevelInfoBody(levelId, stars, passTime)), // mainLevelInfo
+    pb.vfield(9, 1),                        // firstPass
+    pb.vfield(10, 1),                       // multipleValue
+  );
+}
+
+// ---- 抽卡 (按池真实掉落 roll) ----
+// 掉落链来自客户端 LotteryInstance_Xls -> Drop_Xls -> DropSet_Xls -> DropGroup_Xls (src/gacha.ts).
+// 每次出货归属该池的真实掉落集(角色池出角色/武器池出武器/材料等), 客户端才会正常展示.
+// 调试开关 SLD_GACHA_FORCE_QUALITY=5: 出货强制为该品质的随机本体, 只影响展示/入库, 不改掉落链.
+// 类型: SLD_GACHA_FORCE_TYPE=leader/weapon 强制角色/律叶; 留空则按本次 roll 到的类型推断.
+const GOLD_LEADER_IDS = Object.keys(LEADER_QUALITY).map(Number).filter((k) => LEADER_QUALITY[k] === 5 && LEADER[k]);
+const GOLD_WEAPON_IDS = Object.keys(WEAPON_GRATE).map(Number).filter((k) => WEAPON_GRATE[k] === 5 && WEAPON[k] && WEAPON_BREAK[k]);
+// 登录字段20 SwearInfo{ repeated SwearPoolInfo poolInfo=2 } (只回已抽过的池; 空则空消息).
+export function swearInfoBody(s: SaveData): Buffer {
+  const pools = Object.entries(s.gacha)
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => pb.concat(pb.vfield(1, Number(k)), pb.vfield(2, n)));
+  return pools.length ? pb.concat(...pools.map((p) => pb.bfield(2, p))) : Buffer.alloc(0);
+}
+
+// SwearHero{ required cardBoxId=1; required number=2 } -> SwearHero_S2C + 后置 ShowItem_Push.
+function swearHeroS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const poolId = reqNum(req, 1) ?? 0;
+  const n = Math.max(0, Math.min(20, reqNum(req, 2) ?? 0));
+  const rewards: Buffer[] = [];
+  const drawn: number[] = [];
+  const newLeaderIds: number[] = []; // 本次新获得的角色 -> 后置 Data_Push 让大厅角色表实时刷新
+  for (let i = 0; i < n; i++) {
+    // 掉落链理论上不会失败(见 gacha.ts MAX_DEPTH); 仍留重试兜底, 避免单抽静默失败
+    // 导致 number < 请求次数让客户端结果 UI 卡住.
+    let dr = poolDraw(poolId);
+    for (let t = 0; !dr && t < 5; t++) dr = poolDraw(poolId);
+    if (!dr || !dr.itemId) continue;
+    let id = dr.itemId;
+    if (config.gacha.forceQuality > 0) {
+      const wantLeader = config.gacha.forceType === "leader" || (config.gacha.forceType !== "weapon" && !!LEADER[id]);
+      const pool = wantLeader ? GOLD_LEADER_IDS : GOLD_WEAPON_IDS;
+      if (pool.length) id = pool[Math.floor(Math.random() * pool.length)];
+    }
+    const num = Math.max(1, dr.num);
+    let rItem = id, rNum = num, rType = 0, par = String(id);
+    if (LEADER[id]) {
+      if (!s.characters.some((c) => c.id === id)) {
+        rType = 1; // 新角色
+        s.characters.push(defaultCharacter(id));
+        newLeaderIds.push(id);
+      } else {
+        // 重复角色 -> 意识碎片(真服口径): decomposeId × decomposeNum; par 指回角色 id.
+        const db = LEADER_DEBRIS[id];
+        if (db) {
+          rItem = db[0]; rNum = db[1]; rType = 0;
+          if (ITEM_VALID.has(rItem)) s.items[String(rItem)] = (s.items[String(rItem)] || 0) + rNum;
+        } else {
+          rType = 1; // 无分解配置: 仍给角色
+        }
+      }
+    } else if (WEAPON[id]) {
+      rType = 2; // 获得式仗(建实例; 无突破配置的不建, 否则登录时崩)
+      if (WEAPON_BREAK[id] && !s.weapons.some((w) => w.cfg === id)) {
+        s.weapons.push({ onlyId: "7g" + id + "-" + (s.weapons.length + 1), cfg: id, leaderId: 0, level: 1, breach: 0, exp: 0, refine: 0, lock: 0, skin: 0 });
+      }
+    } else if (ITEM_VALID.has(id)) {
+      s.items[String(id)] = (s.items[String(id)] || 0) + num;
+    }
+    // recordInfo.itemId 必须是"抽到的本体"(角色/律叶), 不能是碎片:
+    // - 客户端 GachaDataMgr 用 recordInfo.itemId 去匹配 Rewards[*].rewardParInfo.par,
+    //   匹配上才把 parid/parcount 填成碎片 (GachaResultItemCtrl 只对 Leader/Weapon 建卡).
+    // - 一旦 recordInfo 里出现碎片(Item), GachaResultItemCtrl 的 itemQuality 为 nil ->
+    //   GetEffectNameWithQuality(nil) 报错, 十连结果页统计不到第 10 个特效 -> 跳过卡死.
+    drawn.push(id);
+    // RewardItem{ itemId=1; curCount=2; count=3; type=4; rewardParInfo=5 }
+    // rewardParInfo{ required oldLv=1; level=2; par=3 } (展示弹窗取 par, 缺了会崩)
+    rewards.push(pb.concat(
+      pb.vfield(1, rItem), pb.vfield(2, rNum), pb.vfield(3, rNum), pb.vfield(4, rType),
+      pb.bfield(5, pb.concat(pb.vfield(1, 0), pb.vfield(2, 0), pb.sfield(3, par))),
+    ));
+  }
+  // 以实际出货数为准, 避免任何单次 roll 失败时 number 与 rewards 数量不一致导致客户端卡住.
+  const got = drawn.length;
+  const total = (s.gacha[String(poolId)] || 0) + got;
+  s.gacha[String(poolId)] = total;
+  saveSave(s);
+  log("info", "gacha", `SwearHero pool=${poolId} n=${n} got=${got} -> [${drawn.join(",")}]`);
+  const rewardsMsg = pb.concat(...rewards.map((p) => pb.bfield(1, p))); // Rewards{ rewardItem }
+  // recordInfo=5 (SwearRecordInfo{ itemId=1; itemNum=2; timeStamp=3; drawCardPoolId=4; recordId=7 })
+  const nowSec = Math.floor(Date.now() / 1000);
+  const recs = drawn.map((lid, i) => pb.concat(
+    pb.vfield(1, lid), pb.vfield(2, 1), pb.vfield(3, nowSec), pb.vfield(4, poolId), pb.vfield(7, total - got + i + 1),
+  ));
+  const body = pb.concat(
+    pb.vfield(1, got),                                                  // number
+    rewards.length ? pb.bfield(2, rewardsMsg) : null,                   // rewards
+    // swearNumberInfo=3 (SwearNumberInfo{ bottomgroup=1; dropbottomMap=2 }): 客户端 GachaDataMgr:656
+    // 无保护读 .bottomgroup, 缺了必崩 -> 抽卡"点了没反应". 必须给(哪怕 bottomgroup=0).
+    pb.bfield(3, pb.vfield(1, 0)),
+    // poolInfo=4 (SwearPoolInfo{ id=1; totalTimes=2; upSwearId=3; specialCoinCount=5 })
+    pb.bfield(4, pb.concat(pb.vfield(1, poolId), pb.vfield(2, total), pb.vfield(3, 0), pb.vfield(5, 0))),
+    ...recs.map((r) => pb.bfield(5, r)),                                // recordInfo
+    // dropPropTimeInfo=7 (DropPropTimeInfo{ required bottomGroup2=1; repeated ProtoHashInt2Int dropPropTime=2 })
+    pb.bfield(7, pb.concat(pb.vfield(1, 0), pb.bfield(2, pb.concat(pb.vfield(1, 0), pb.vfield(2, 0))))),
+  );
+  // 抽卡结果靠 ShowItem_Push 展示. 关键: ReturnPackageInfo 走 replenishList, 而 Lua 的
+  // HttpClientForLua.Ignore_Replenish_MsgID 里 ShowItem_Push 会被过滤掉 -> 必须走 completedList:
+  // 主包(SwearHero_S2C)放 completedList 单包槽, ShowItem_Push 走 PushMsg2Client(同进 completedList, 晚于主包).
+  const showItem = pb.concat(pb.vfield(1, 56), rewards.length ? pb.bfield(2, rewardsMsg) : null);
+  // 新角色另推 Data_Push(900011){ leaderAttrChanged=5{ leaderInfo=1[...] } }:
+  // 客户端 HeroMsg.LeaderAttrChangedHandler 才把角色加进大厅角色表(SetLeaderDataForId -> SetHas(true));
+  // 只靠登录的 PlayerLoginGetInfo.leaderInfo 得重登才看得到, 实时刷新必须靠这条推送.
+  const extraPushes: Array<[number, Buffer]> = [];
+  if (rewards.length) extraPushes.push([CMD.ShowItemPush, showItem]);
+  if (newLeaderIds.length) {
+    const infos = newLeaderIds.map((lid) => leaderInfo(s, characterById(s, lid)));
+    extraPushes.push([CMD.DataPush, pb.bfield(5, pb.concat(...infos.map((b) => pb.bfield(1, b))))]);
+  }
+  return { body, pushes: [], extra: extraPushes, mainInCompleted: true };
+}
+
+// GetSwearRecord_S2C{ required cardBoxId=1; required offsetIndex=2; required totalRecordNumber=4 }
+function getSwearRecordS2C(req: GsRequest): Buffer {
+  return pb.concat(pb.vfield(1, reqNum(req, 1) ?? 0), pb.vfield(2, reqNum(req, 2) ?? 1), pb.vfield(4, 0));
+}
+
+// SwitchClothing{ required leaderId=1; required clothingId=2 } -> SwitchClothing_S2C.
+// 客户端 SkinMsg:58 读 destinationLeaderBean, 缺了换皮肤就报 "destinationLeaderBean nil" 失败.
+function switchClothingS2C(req: GsRequest): Buffer {
+  const s = loadSave();
+  const lid = reqNum(req, 1) ?? 0;
+  const cid = reqNum(req, 2) ?? 0;
+  let other = 0;
+  if (lid && cid > 0) {
+    for (const c of s.characters) if (c.id !== lid && c.clothingId === cid) other = c.id;
+    for (const c of s.characters) {
+      if (c.id === lid) c.clothingId = cid;
+      else if (other && c.id === other) c.clothingId = 0;
+    }
+    saveSave(s);
+    log("info", "skin", `SwitchClothing ${lid} <- ${cid} off=${other}`);
+  }
+  return pb.concat(
+    pb.bfield(2, leaderInfo(s, characterById(s, lid))),               // destinationLeaderBean
+    pb.bfield(3, leaderInfo(s, characterById(s, other || lid))),     // sourceLeaderBean
+  );
+}
+
+// UpgradeLeader{ required leaderId=1; repeated ProtoHashInt2Int itemInfo=3 } -> UpgradeLeader_S2C{} + Data_Push.
+// 客户端 UX 靠推送刷新(leaderAttrChanged), 只回空包不会更新面板.
+function upgradeLeaderS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const lid = reqNum(req, 1) ?? 0;
+  const c = s.characters.find((x) => x.id === lid);
+  if (c) {
+    c.level = Math.min(80, (c.level || 1) + 1); // 简化: 每次 +1 (封顶 80)
+    saveSave(s);
+    log("info", "leader", `UpgradeLeader ${lid} -> lv${c.level}`);
+  }
+  // Data_Push{ leaderAttrChanged=5{ repeated LeaderInfo leaderInfo=1 } }
+  const push = pb.bfield(5, pb.bfield(1, c ? leaderInfo(s, c) : Buffer.alloc(0)));
+  return { body: Buffer.alloc(0), pushes: c ? [[CMD.DataPush, push]] : [] };
+}
+
+// SwitchWeapon{ required leaderId=1; required weaponId=2(onlyId string) } -> SwitchWeapon_S2C.
+function switchWeaponS2C(req: GsRequest): Buffer {
+  const s = loadSave();
+  const lid = reqNum(req, 1) ?? 0;
+  const oid = reqStr(req, 2);
+  const nw = s.weapons.find((w) => w.onlyId === oid);
+  if (!lid || !nw) { log("warn", "weapon", `SwitchWeapon 找不到实例 lid=${lid} oid="${oid}"`); return Buffer.alloc(0); }
+  const old = s.weapons.find((w) => w.leaderId === lid && w.onlyId !== oid);
+  const other = nw.leaderId || 0;
+  if (other === lid) return Buffer.alloc(0);
+  nw.leaderId = lid;
+  if (old) old.leaderId = other;
+  saveSave(s);
+  log("info", "weapon", `SwitchWeapon ${lid} <- ${oid} from=${other} out=${old?.onlyId ?? "-"}`);
+  return pb.concat(
+    pb.bfield(1, weaponInfoFromInst(nw)),                       // weaponInfo (客户端 CheckValid 无条件读)
+    pb.bfield(2, leaderInfo(s, characterById(s, lid))),         // leader
+    ...(other > 0 ? [pb.bfield(3, leaderInfo(s, characterById(s, other)))] : []), // beforeLeader
+    ...(old ? [pb.bfield(4, weaponInfoFromInst(old))] : []),    // oldWeaponInfo
+  );
+}
+
+// GetPayShopData{ required version=1; required update=2 } -> GetPayShopData_S2C{ required PayShopData=1 }.
+function getPayShopDataS2C(): Buffer {
+  // PayShopData{ required int64 payConfVersion=5 }
+  return pb.bfield(1, pb.vfield(5, 1));
+}
+
+// 结算/离开: 回一个合法空包(客户端 Lua 按 header 派发, 不回会一直等).
+function battleAck(tag: string): GsBuilder {
+  return (req: GsRequest): Buffer => {
+    const fields = pb.decodeFields(req.proto ?? Buffer.alloc(0));
+    log("info", "battle", `${tag} fields=${fields
+      .map((f) => (Buffer.isBuffer(f.value) ? `${f.field}:bytes(${f.value.length})` : `${f.field}:${f.value}`))
+      .join(" ")}`);
+    return Buffer.alloc(0);
+  };
+}
+
+export const HANDLERS: Record<number, GsBuilder> = {
+  [CMD.PlayerLogin]: playerLoginS2C,
+  [CMD.PlayerLoginGetInfo]: playerLoginGetInfoS2C,
+  [CMD.GetPrologue]: getPrologueS2C,
+  [CMD.SetPrologue]: setPrologueS2C,
+  [CMD.GetPayShopDataAfterLogin]: getPayShopDataAfterLoginS2C,
+  [CMD.GetWaitOrderData]: getWaitOrderDataS2C,
+  [CMD.LoginOpenSmallBattlePanel]: loginOpenSmallBattlePanelS2C,
+  [CMD.GetWeaponListPage]: getWeaponListPageS2C,
+  [CMD.GetPerkInfoListPage]: getPerkInfoListPageS2C,
+  [CMD.GetRevelationInfoListPage]: getRevelationInfoListPageS2C,
+  [CMD.GetOpenFunctionData]: getOpenFunctionDataS2C,
+  [CMD.ChangeStep]: changeStepS2C,
+  [CMD.ClientDataOverLogin]: clientDataOverLoginS2C,
+  [CMD.GetSignReward]: getSignRewardS2C,
+  [CMD.GetNextDayUpdateData]: getNextDayUpdateDataS2C,
+  [CMD.GetAllActivity]: getAllActivityS2C,
+  [CMD.GetOtherPlayerInfo]: getOtherPlayerInfoS2C,
+  [CMD.CheckPlayerName]: checkPlayerNameS2C,
+  [CMD.ChangePlayerName]: changePlayerNameS2C,
+  [CMD.ChangeSex]: changeSexS2C,
+  [CMD.ChangeSecretary]: changeSecretaryS2C,
+  [CMD.SwitchClothing]: switchClothingS2C,
+  [CMD.UpgradeLeader]: upgradeLeaderS2C,
+  [CMD.SwitchWeapon]: switchWeaponS2C,
+  [CMD.GetPayShopData]: getPayShopDataS2C,
+  // 战斗: 11028 进战斗(核心), 11003 战斗服 KCP 登录, 11018/11019/11031/11032 结算与离开
+  [CMD.StartSoloBattle]: startSoloBattleS2C,
+  [CMD.OverMainLevel]: overMainLevelS2C,
+  [CMD.BattleLogin]: battleLoginS2C,
+  [CMD.BattleSettle]: battleAck("BattleSettle"),
+  [CMD.BattleLeave]: battleAck("BattleLeave"),
+  [CMD.CloseBattleSettle]: battleAck("CloseBattleSettle"),
+  [CMD.BattleLeaveFinishS2C]: battleAck("BattleLeaveFinish"),
+  // 抽卡
+  [CMD.SwearHero]: swearHeroS2C,
+  [CMD.SelectSwearChange]: () => Buffer.alloc(0),
+  [CMD.GetSwearRecord]: getSwearRecordS2C,
+  // SetSpecialTaskProgress_S2C{ required int32 errCode=1 } — 秘书互动等任务的进度回执,
+  // required 字段缺了 Lua 侧 pbNew.decode 直接报错.
+  [CMD.SetSpecialTaskProgress]: () => pb.vfield(1, 0),
+  // 以下几种的 S2C 只有 optional/repeated, 空 body 即"新号无数据"; 但仍要**成包**回,
+  // 否则客户端派发器收不到这个 msgId, 面板回调永不触发 (签到弹窗关不掉就是这么来的).
+  [CMD.GetAllFriendInfo]: () => Buffer.alloc(0),        // GetAllFriendInfo_S2C{repeated ...=1}
+  // ActivityReplayReward_S2C{ required int32 errorCode=1 } —— 别再回空 body:
+  // 缺 required 字段会让 Lua pbNew.decode 报错, 客户端还当成没收到 -> 0.5s 一条反复重发 21015.
+  [CMD.ActivityReplayReward]: () => pb.vfield(1, 0),
+  [CMD.GetBattlePassInfoListPage]: () => Buffer.alloc(0),
+  [CMD.GetRogueInfoListPage]: () => Buffer.alloc(0),
+  [CMD.GetElementRuinsLevelGroupList]: () => Buffer.alloc(0),
+};

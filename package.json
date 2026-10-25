@@ -1,0 +1,25 @@
+{
+  "name": "sld-offline-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Thrud(sld) 停服离线假服务端: KCP/UDP 网关 + Bilibili SDK/CDN/热更桩 (TypeScript)",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "bin": { "sld-offline-server": "dist/index.js" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js",
+    "gate": "node dist/index.js",
+    "start:kcp": "SLD_NET_MODE=kcp node dist/index.js",
+    "start:raw": "SLD_NET_MODE=raw node dist/index.js",
+    "selftest": "node test/selftest.mjs",
+    "extract": "${PY:-/home/tmp/venv/bin/python} tools/extract_res.py",
+    "lua:groups": "/home/tmp/venv/bin/python tools/lua_probe.py groups --manifest ../manifests/toluaLoader --basedir toLua/Data",
+    "meta:check": "/home/tmp/venv/bin/python tools/meta_decrypt.py data/logs/global-metadata.dat --check"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

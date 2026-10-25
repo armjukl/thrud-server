@@ -1,0 +1,19 @@
+# 依赖 / 构建产物
+node_modules/
+dist/
+*.tsbuildinfo
+
+# 运行时日志 / 抓包 / 派生资源（都可重建，不进版本库）
+logs/
+data/logs/
+data/capture/
+
+# 杂项
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+
+# frp 隧道凭据(auth.token), 永不入库
+frpc-sld.toml
+frida/frpc-sld.toml
