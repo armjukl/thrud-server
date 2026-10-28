@@ -23,7 +23,7 @@ import { ITEM_VALID } from "./data/items.js";
 import { LEADER_DEBRIS } from "./data/leaderdebr.js";
 import { LEADER_QUALITY, WEAPON_GRATE } from "./data/rarity.js";
 import { poolDraw } from "./gacha.js";
-import { characterById, defaultCharacter, loadSave, saveSave, type SaveCharacter, type SaveData, type SaveWeapon } from "./save.js";
+import { characterById, defaultCharacter, loadSave, newWeapon, saveSave, type SaveCharacter, type SaveData, type SaveWeapon } from "./save.js";
 
 export interface GsRequest {
   msgId: number | null;
@@ -273,7 +273,7 @@ function weaponInstances(s: SaveData): SaveWeapon[] {
   for (const c of s.characters) {
     if (!list.some((w) => w.leaderId === c.id)) {
       const cfg = weaponCfgOf(c.id);
-      if (WEAPON_BREAK[cfg]) list.push({ onlyId: weaponOnlyId(c.id), cfg, leaderId: c.id, level: 1, breach: 0, exp: 0, refine: 0, lock: 0, skin: 0 });
+      if (WEAPON_BREAK[cfg]) list.push(newWeapon(weaponOnlyId(c.id), cfg, c.id));
     }
   }
   return list;
@@ -282,7 +282,7 @@ function weaponInstances(s: SaveData): SaveWeapon[] {
 // 某角色当前穿戴的武器实例 (没有就补一把默认).
 function equippedWeapon(s: SaveData, leaderId: number): SaveWeapon {
   return weaponInstances(s).find((w) => w.leaderId === leaderId)
-    ?? { onlyId: weaponOnlyId(leaderId), cfg: weaponCfgOf(leaderId), leaderId, level: 1, breach: 0, exp: 0, refine: 0, lock: 0, skin: 0 };
+    ?? newWeapon(weaponOnlyId(leaderId), weaponCfgOf(leaderId), leaderId);
 }
 
 function leaderInfo(s: SaveData, c: SaveCharacter): Buffer {
@@ -358,10 +358,12 @@ function mainLevelInfoEntries(s: SaveData): Buffer[] {
 }
 
 // 训练本通关 -> TrainLevelInfo{ required id=1; todayAttackNum=2; attackNum=3; lastAttackTime=4; required passTime=8 }.
+// passTime 以前恒发 0: 客户端把这一列当"单局耗时", 挂机/扫荡按它算场次, 发 0 等于告诉客户端
+// "瞬间打完" -> 奖励池算空. 现在取存档里的真记录(OverTrainLevel 按 C2S 写进来, 老档兜 30 秒).
 function trainLevelInfoBody(s: SaveData): Buffer[] {
-  const now = BigInt(Date.now());
-  return s.trainLevels.map((id) => pb.concat(
-    pb.vfield(1, id), pb.vfield(2, 1), pb.vfield(3, 1), pb.vfield(4, now), pb.vfield(8, 0),
+  return Object.values(s.trainLevels).map((r) => pb.concat(
+    pb.vfield(1, r.id), pb.vfield(2, r.todayAttackNum), pb.vfield(3, r.attackNum),
+    pb.vfield(4, BigInt(r.lastAttackTime || Date.now())), pb.vfield(8, r.passTime),
   ));
 }
 
@@ -913,7 +915,7 @@ function swearHeroS2C(req: GsRequest): GsResult {
     } else if (WEAPON[id]) {
       rType = 2; // 获得式仗(建实例; 无突破配置的不建, 否则登录时崩)
       if (WEAPON_BREAK[id] && !s.weapons.some((w) => w.cfg === id)) {
-        s.weapons.push({ onlyId: "7g" + id + "-" + (s.weapons.length + 1), cfg: id, leaderId: 0, level: 1, breach: 0, exp: 0, refine: 0, lock: 0, skin: 0 });
+        s.weapons.push(newWeapon("7g" + id + "-" + (s.weapons.length + 1), id, 0));
       }
     } else if (ITEM_VALID.has(id)) {
       s.items[String(id)] = (s.items[String(id)] || 0) + num;

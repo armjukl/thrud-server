@@ -1,6 +1,6 @@
 # 斯露德（Thrud / sld）离线假服务端 · 当前方案
 
-> **最后更新：2026-10-18** ｜ 老文档（含 PROJECT-LOG、frida 进展、1.0.6 静态分析）见 [`docs/old/`](old/)
+> **最后更新：2026-10-28** ｜ 老文档（含 PROJECT-LOG、frida 进展、1.0.6 静态分析）见 [`docs/old/`](old/)
 
 本文只写**现在真正在用**的口径。历史推演过程不在这里，去 `docs/old/PROJECT-LOG.md`（已归档，结论可能过时）。
 
@@ -20,8 +20,10 @@
 | 战斗高度轴 | ✅ 高度轴按关卡发放（客户端 `NewLevelInstance.controlMode`），第1章 1~8 关已铺外部 Lua 解锁、真机可升降（[战斗移动轴与高度解锁](README-战斗移动轴与高度解锁.md) §7）；✅ gadget 运行期版 `ZAXIS` 全关卡、不推文件，10-18 真机已生效（[改Lua脚本](README-改Lua脚本.md) §4、[注入器 gadget](README-注入器gadget.md) §5.6） |
 | 只靠 hook 的本地化 | 🚧 复刻 PC 纪念版的脚本集已落地（`frida-gadget/`，离线 33 项构建自检 + 39 条真字节断言全绿），**真机一轮还没跑**（[`../../frida-gadget/README.md`](../../frida-gadget/README.md)） |
 | 资源完整性 | ✅ 1583 台账 44,841 条 **逐条 md5 对得上**（改过的 Lua chunk 连带台账那一条 md5 一起换，见 §3 第 1 条） |
+| 假服地基（对齐路 B） | 🚧 分支 `gs-parity`：36 张整表进 `src/data/tbl/` + `tbl.ts` 取数面、`econ.ts`/`skills.ts` 扣费发奖与升级曲线、`save.ts` 原子写 + `.bak` 回退 + 结构迁移，自检 23/23；**第一档 28 条 handler 还没接**（见 [待补功能](README-待补功能.md)） |
 
-剩余问题全部是**服务端协议未实现**，不是资源/客户端问题。
+剩余问题全部是**服务端协议未实现**，不是资源/客户端问题。扣费/经验/曲线这类原语此前在 `src/`
+里一个都没有（41 条 handler 无一条减过库存），现在地基到位，缺的只是把命令逐条接上去。
 
 ---
 
@@ -50,11 +52,16 @@
     │   ├── framing.ts                 规则驱动框帧（6 候选自动试探）
     │   ├── gateway.ts                 UDP 监听 / per-peer 模式判定 / msgId 派发
     │   ├── payloads.ts                各 S2C 消息构造 + 请求→处理器表（CMD/HANDLERS）
+    │   ├── save.ts                    存档读写：normalizeSave 白名单 / 原子写 + .bak 回退 / 结构迁移
+    │   ├── tbl.ts                     客户端配置表唯一取数面（含缺行计数）
+    │   ├── econ.ts  skills.ts          经济原语（扣费/发奖/经验曲线）/ 技能升级上限
+    │   ├── gacha.ts                   按池真实掉落链
     │   ├── gs.ts                      /AppInterface 请求解析 + ReturnPackagePush 组包
     │   ├── http.ts                    SDK/列表/版本 + AppInterface 路由
-    │   └── data/                      ID 表（conditions / guides）
+    │   └── data/                      ID 表（conditions / guides）+ tbl/（36 张整表，生成物）
     ├── dist/                         tsc 构建产物（gitignore）
     ├── data/  certs/  tools/  proto/  frida/  test/
+    │                                    tools/gen_tables.py = 整表生成器（--tier 1 / --tables / --check）
     ├── docs/  ← 你在这里
     ├── logs/                         运行日志（gitignore）
     ├── run.sh                        启动（先 build 再 node dist）
@@ -177,10 +184,28 @@
 | `payloads.ts` / `gs.ts` | 各协议 S2C 构造 / `/AppInterface` protobuf 编解码 |
 | `gateway.ts` / `kcp.ts` / `framing.ts` | KCP/UDP 网关、KCP 段、帧封装 |
 | `proto.ts` | 手写 protobuf 编解码 |
+| `tbl.ts` | **客户端配置表的唯一取数面**（`has/row/all/ids/num/str/arr/sorted/maxOf`），带"表缺行"计数；行存/列存两种形状在这里统一展开 |
+| `data/tbl/*.ts` | `tools/gen_tables.py` 生成的 36 张整表（`const RAW="<json>"` + 惰性 `raw()`），**勿手改，改表改生成器** |
+| `econ.ts` | 经济原语：`checkConsume/payConsume/costItem/payItemList/addItem/addMoney/addStrength/addExp/rewardById/rollPlayerLv/catchUpStrength` + 角色/武装升级曲线。语义对齐路 B，取数一律走 `tbl.ts`；只改存档、把改动记进 `Effects`，**不 import `payloads.ts`**（免环） |
+| `skills.ts` | 主动/天赋/式杖技能升级：上限双卡（`LeaderBreak.skillLevel` 与表内最大 `skillLevel`），满级或材料不足一律不推进 |
 | `data/conditions.ts` / `data/guides.ts` | 补丁数据：conditionSet 全量下发、强制跳过新手引导 |
-| `data/{lottery,drop,dropset,dropgroup}.ts` / `gacha.ts` | 抽卡按池真实掉落链（客户端表） |
+| `data/{lottery,drop,dropset,dropgroup}.ts` / `gacha.ts` | 抽卡按池真实掉落链（客户端表）；`dropAll()` 是"整条必掉就整批发"的口径 |
 | `data/{leader,weapon,rarity,...}.ts` | 自动生成的客户端表（本体 / 品质 1..5 等） |
 | `logger.ts` | 日志 + 抓包落盘 |
+
+### 整表的成本（实测，2 核 / 2 GB / 可用 ~550 MB）
+
+| 指标 | 数字 | 阈值 |
+|---|---|---|
+| `npm run typecheck` | 4.82 s，峰值 RSS 361 MB | ≤ 8 s |
+| `npm run build`（`rm -rf dist` 后） | 5.60 s，峰值 RSS 374 MB | ≤ 15 s |
+| `src/data/tbl` / `dist` 体积 | 13 MB / 14 MB | — |
+| 36 张表全 parse（25 193 行） | 103 ms | 起服增量 ≤ 400 ms |
+| `payloads.ts` 模块图加载 | 36 ms（惰性 parse，未取到的表不花钱） | — |
+
+形状必须是 `const RAW = "<整表 JSON 单行>"` + `JSON.parse`：**类型化字面量在 4.6 MB 单文件上会让 tsc OOM**（161 s 后被杀），
+而 `JSON.parse` 形状 10.58 MB / 32 表只要 1.08 s。单文件超 4 MB 时生成器自动切列存 `{"c":[cols],"r":[[…]]}`（同批小 3.6×），由 `tbl.ts` 展开，业务代码不改。
+表树：`EXT=/home/sld/res/phone/luaplain/toLua`（1583，同 id 冲突时胜）+ `APK=/home/tmp/apklua_plain/toLua`（**B服 1426**，只补 EXT 缺的表/行）—— 本轮只保证 B服可用，不管渠道服。
 
 ### 已实现协议（`payloads.ts` 的 `HANDLERS`）
 
@@ -286,9 +311,32 @@ fuser -k -n tcp 9443 19005
 ```bash
 npm ci                   # 安装 TS 依赖（离线可从 fakeserverts/node_modules 拷一份）
 npm run build            # tsc -> dist/
+npm run selftest         # 29 条：KCP/帧/网关/HTTP 桩/战斗/抽卡/整表/存档/经济/技能/proto required/工具链
 ```
 
 前提：`res/` 已就位（`res/phone/`、`res/apk/`）。
+
+**例外：`src/data/tbl/` 是入库的生成物**（36 张整表，13 MB）。它随仓库走，clone 后不用重新生成就能
+`build`；要改表才需要生成器和两棵明文 Lua 树：
+
+```bash
+python3 tools/gen_tables.py --tier 1            # 重写第一档 36 张
+python3 tools/gen_tables.py --tables SignBingo  # 点名某张(会先问 TIER1 里有没有)
+python3 tools/gen_tables.py --check             # 只比对行数/provenance, 不落盘
+```
+
+`EXT=/home/sld/res/phone/luaplain/toLua`（同 id 冲突时胜出）+ `APK=/home/tmp/apklua_plain/toLua`
+（B服 1426，只补 EXT 缺的表和行）。生成物**禁止手改**，手改的那一行下次生成即被覆盖。
+
+### proto required 自检（为什么 `test/proto_schema.mjs` 必须在）
+
+`src/proto.ts` 是手写 wire format，只认字段号、不认 `required`：少发一个必填字段，编译过、
+端到端也过，只有客户端解析那一刻才崩或"面板里面空"。`test/proto_schema.mjs` 把 `proto/*.proto`
+的 required 集读出来当断言输入，`test/selftest.mjs` 的 `checkHandler()` 是每条 handler 的公共外壳
+（查回体 required + 手写"1 还是 2"的串号断言 + `after()` 验真落盘）。两条已实测的判据：
+把 `LeaderInfo` 的 `weaponId=9` 从构造器里删掉 → `checkHandler` 与"41 条全覆盖"一起变红；
+把 `assertRequired` 改成直接放过 → 解析器自检的负控立刻变红。新接一条命令的最低门槛是
+`checkHandler(...)` 里带上 `fields`（字段号手写断言）和 `after`（落盘断言）。
 
 ---
 
@@ -300,3 +348,9 @@ npm run build            # tsc -> dist/
 2. 外部资源**整包铺**，别混版本、别只铺一半 —— md5 与 1583 台账必须一致。
 3. 别把资源包里的 `res/*.json` 索引单独替换，客户端自己维护它们。
 4. 改 `data/save.json` 即可换大厅看板 / 调等级角色，不用重启。
+5. `src/data/tbl/*.ts` 是生成物，**改表改 `tools/gen_tables.py`**，不手改。
+6. 新接一条命令必须过 `checkHandler()`（proto required + 字段号手写断言 + 落盘断言），
+   并在 `test/selftest.mjs` 的 `TIER1_DONE` 里登记 —— 不登记的"偷偷接上"会被注册表守卫拦住。
+7. `src/save.ts` 加一个新顶层块，要同时改**四处**：接口 / `DEFAULT_SAVE` / `normalizeSave` /
+   [`README-存档修改.md`](README-存档修改.md) 字段表。少一处 = 写盘成功、读回即丢；
+   两条 save 自检（全字段往返 + 顶层键集相等）会直接把它变成红灯。

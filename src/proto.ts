@@ -37,6 +37,15 @@ export function sfield(field: number, value: string | null | undefined): Buffer 
   return bfield(field, Buffer.from(String(value), "utf8"));
 }
 
+/**
+ * bool -> varint 0/1. 必须显式用这个: vfield 走 BigInt(true) 会直接抛.
+ * 客户端 proto2 里 required bool (如 FirstThoughtInfo.redDot=2) 缺字段 = 解不出整包.
+ */
+export function boolfield(field: number, value: boolean | null | undefined): Buffer {
+  if (value === undefined || value === null) return Buffer.alloc(0);
+  return vfield(field, value ? 1 : 0);
+}
+
 export function dblfield(field: number, value: number | null | undefined): Buffer {
   if (value === undefined || value === null) return Buffer.alloc(0);
   const b = Buffer.alloc(8);

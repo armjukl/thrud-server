@@ -79,6 +79,40 @@ export function poolDraw(poolId: number): DrawResult | null {
   return rollDrop(dropOrSet, 0);
 }
 
+/** 单次 roll 一个 Drop 行 (奖励列直接指 Drop 的那些关/挂机用). */
+export function dropRoll(dropId: number): DrawResult | null {
+  return rollDrop(dropId, 0);
+}
+
+/**
+ * "必掉全部"口径 (路 B rollDropAll): 只有当这一行**每一条**都是 `layer=1 且 probability>=10000`
+ * 时才整批发; 只要有一条是子树(DropSet/DropGroup)或权重不满, 它本质是"多选一"的池,
+ * 退回 roll 一次 —— 否则会把 9000/1000 这种权重行当成双倍必掉.
+ */
+export function dropAll(dropId: number): DrawResult[] | null {
+  const d = DROP[dropId];
+  if (d) {
+    const [layers, targets, nmin, nmax, prob] = d;
+    let nAll = 0;
+    let nFull = 0;
+    const out: DrawResult[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      const tid = targets[i] ?? 0;
+      const w = prob[i] ?? 0;
+      if (tid > 0 && w > 0) {
+        nAll++;
+        if ((layers[i] ?? 0) === 1 && w >= 10000) {
+          nFull++;
+          out.push({ itemId: tid, num: randInt(nmin[i] ?? 1, nmax[i] ?? nmin[i] ?? 1) });
+        }
+      }
+    }
+    if (nAll > 0 && nFull === nAll) return out;
+  }
+  const one = rollDrop(dropId, 0);
+  return one ? [one] : null;
+}
+
 /** 池信息 (无则 null): [g1,cardDropSetId,swearType,itemId,itemNum,itemNum1,b1,b2,bottomGroup,bottomGroup2,cardBoxNumber]. */
 export function poolInfo(poolId: number): readonly [number, number, number, number, number, number, number, number, number, number, number] | null {
   return LOTTERY[poolId] ?? null;

@@ -14,7 +14,8 @@
     "maxStrength": 120,
     "shipStrength": 100,
     "maxShipStrength": 100,
-    "secretary": 2027001
+    "secretary": 2027001,
+    "strengthRealTime": 1793201542
   },
   "characters": [
     {
@@ -30,7 +31,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2027001,
@@ -45,7 +50,11 @@
       "clothingId": 4027102,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2002001,
@@ -60,7 +69,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2012001,
@@ -75,7 +88,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2006001,
@@ -90,7 +107,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2024001,
@@ -105,7 +126,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2020001,
@@ -120,7 +145,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2003001,
@@ -135,7 +164,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2038001,
@@ -150,7 +183,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2033001,
@@ -165,7 +202,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2023001,
@@ -180,7 +221,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2004001,
@@ -195,7 +240,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2007001,
@@ -210,7 +259,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2016001,
@@ -225,7 +278,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2009001,
@@ -240,7 +297,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2041001,
@@ -255,7 +316,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2034001,
@@ -270,7 +335,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2025001,
@@ -285,7 +354,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2039001,
@@ -300,7 +373,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2036001,
@@ -315,7 +392,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2031001,
@@ -330,7 +411,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2028001,
@@ -345,7 +430,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2026001,
@@ -360,7 +449,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2042001,
@@ -375,7 +468,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     },
     {
       "id": 2008001,
@@ -390,7 +487,11 @@
       "clothingId": 0,
       "weaponId": "",
       "signLv": 0,
-      "perkId": ""
+      "perkId": "",
+      "activeLv": {},
+      "talentLv": {},
+      "stick": {},
+      "stickLv": {}
     }
   ],
   "weapons": [
@@ -403,7 +504,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5033010-2",
@@ -414,7 +533,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5035020-3",
@@ -425,7 +562,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5034010-4",
@@ -436,7 +591,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5031010-5",
@@ -447,7 +620,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5033020-6",
@@ -458,7 +649,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5035010-7",
@@ -469,7 +678,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5031020-8",
@@ -480,7 +707,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5043020-9",
@@ -491,7 +736,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5041060-10",
@@ -502,7 +765,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5041081-11",
@@ -513,7 +794,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5044040-12",
@@ -524,7 +823,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5151020-13",
@@ -535,7 +852,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5151010-14",
@@ -546,7 +881,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5053030-15",
@@ -557,7 +910,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5054020-16",
@@ -568,7 +939,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5053020-17",
@@ -579,7 +968,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5054030-18",
@@ -590,7 +997,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5054010-19",
@@ -601,7 +1026,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5154010-20",
@@ -612,7 +1055,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5153020-21",
@@ -623,7 +1084,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5155020-22",
@@ -634,7 +1113,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5051030-23",
@@ -645,7 +1142,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5151030-24",
@@ -656,7 +1171,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5151040-25",
@@ -667,7 +1200,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5155040-26",
@@ -678,7 +1229,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     },
     {
       "onlyId": "7g5041040-27",
@@ -689,7 +1258,25 @@
       "exp": 0,
       "refine": 0,
       "lock": 0,
-      "skin": 0
+      "skin": 0,
+      "recastingTime": 0,
+      "recastingSkillTime": 0,
+      "rand": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      },
+      "last": {
+        "skill": [],
+        "key": [],
+        "val": [],
+        "poolIdx": [],
+        "attrIdx": [],
+        "scope": 0
+      }
     }
   ],
   "items": {
@@ -11090,74 +11677,470 @@
       3
     ]
   },
-  "trainLevels": [
-    100101,
-    100102,
-    100103,
-    100104,
-    100105,
-    100106,
-    100201,
-    100202,
-    100203,
-    100204,
-    100205,
-    100206,
-    100401,
-    100402,
-    100403,
-    100404,
-    100405,
-    100406,
-    200101,
-    200102,
-    200103,
-    200104,
-    200105,
-    200201,
-    200202,
-    200203,
-    200204,
-    200205,
-    200301,
-    200302,
-    200303,
-    200304,
-    200305,
-    200401,
-    200402,
-    200403,
-    200404,
-    200405,
-    200501,
-    200502,
-    200503,
-    200504,
-    200505,
-    300101,
-    300102,
-    300103,
-    300104,
-    300105,
-    300106,
-    400101,
-    400102,
-    400103,
-    400104,
-    400105,
-    500201,
-    500202,
-    500203,
-    500204,
-    500205,
-    500206,
-    500301,
-    500302,
-    500303,
-    500304,
-    500305,
-    500306
-  ],
+  "trainLevels": {
+    "100101": {
+      "id": 100101,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100102": {
+      "id": 100102,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100103": {
+      "id": 100103,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100104": {
+      "id": 100104,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100105": {
+      "id": 100105,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100106": {
+      "id": 100106,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100201": {
+      "id": 100201,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100202": {
+      "id": 100202,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100203": {
+      "id": 100203,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100204": {
+      "id": 100204,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100205": {
+      "id": 100205,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100206": {
+      "id": 100206,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100401": {
+      "id": 100401,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100402": {
+      "id": 100402,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100403": {
+      "id": 100403,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100404": {
+      "id": 100404,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100405": {
+      "id": 100405,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "100406": {
+      "id": 100406,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200101": {
+      "id": 200101,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200102": {
+      "id": 200102,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200103": {
+      "id": 200103,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200104": {
+      "id": 200104,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200105": {
+      "id": 200105,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200201": {
+      "id": 200201,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200202": {
+      "id": 200202,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200203": {
+      "id": 200203,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200204": {
+      "id": 200204,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200205": {
+      "id": 200205,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200301": {
+      "id": 200301,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200302": {
+      "id": 200302,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200303": {
+      "id": 200303,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200304": {
+      "id": 200304,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200305": {
+      "id": 200305,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200401": {
+      "id": 200401,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200402": {
+      "id": 200402,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200403": {
+      "id": 200403,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200404": {
+      "id": 200404,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200405": {
+      "id": 200405,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200501": {
+      "id": 200501,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200502": {
+      "id": 200502,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200503": {
+      "id": 200503,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200504": {
+      "id": 200504,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "200505": {
+      "id": 200505,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "300101": {
+      "id": 300101,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "300102": {
+      "id": 300102,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "300103": {
+      "id": 300103,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "300104": {
+      "id": 300104,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "300105": {
+      "id": 300105,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "300106": {
+      "id": 300106,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "400101": {
+      "id": 400101,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "400102": {
+      "id": 400102,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "400103": {
+      "id": 400103,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "400104": {
+      "id": 400104,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "400105": {
+      "id": 400105,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "500201": {
+      "id": 500201,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "500202": {
+      "id": 500202,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "500203": {
+      "id": 500203,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "500204": {
+      "id": 500204,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "500205": {
+      "id": 500205,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "500206": {
+      "id": 500206,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "500301": {
+      "id": 500301,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "500302": {
+      "id": 500302,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "500303": {
+      "id": 500303,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "500304": {
+      "id": 500304,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "500305": {
+      "id": 500305,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    },
+    "500306": {
+      "id": 500306,
+      "passTime": 30,
+      "todayAttackNum": 1,
+      "attackNum": 1,
+      "lastAttackTime": 1793201542089
+    }
+  },
   "gacha": {
     "2006": 10,
     "3090": 10,
@@ -11175,5 +12158,35 @@
     "times": 4,
     "day": 20750,
     "lastTime": 1792846051
-  }
+  },
+  "tasks": {
+    "taskChapter": 101,
+    "dayGroupIndex": 10001,
+    "dayTaskPoint": 0,
+    "weekTaskPoint": 0,
+    "passedTasks": {},
+    "progress": {},
+    "passedDayPoints": [],
+    "passedWeekPoints": [],
+    "rollDay": 1793201542000,
+    "rollWeek": 1793201542000
+  },
+  "bg": {
+    "open": 1793201542,
+    "sign": 0,
+    "signTime": 0,
+    "bingo": [],
+    "redDot": false
+  },
+  "bgVersion": 1,
+  "hangUp": {
+    "type": 0,
+    "levelId": 0,
+    "times": 0,
+    "startTime": 0,
+    "endTime": 0,
+    "state": 0
+  },
+  "wSeq": 0,
+  "regTime": 1793201542
 }
