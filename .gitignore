@@ -7,6 +7,9 @@ dist/
 logs/
 data/logs/
 data/capture/
+# saveSave() 的原子写中间文件与坏档回退副本（save.json 本身入库）
+data/*.tmp
+data/*.bak
 
 # 杂项
 __pycache__/

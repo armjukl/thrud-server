@@ -79,6 +79,8 @@ enum CmdEnum
     CompositionLeader               =1012;// 合成武将
     ChangeCustomFormationName       =1013;// 修改阵型名字
     ChangeLeaderFormation           =1014;// 修改阵型
+    GetLeaderInfo                   =1015;// 获取武将信息
+    UpgradeStickSkill               =1016;// 武将式杖技能升级
 //========================武将装备(镜像)(1100-1199)=============================
 
     UpgrageRevelation               =1100;// 镜像升级

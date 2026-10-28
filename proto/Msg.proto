@@ -621,6 +621,8 @@ message LeaderInfo
 	repeated ProtoHashInt2Int stickSkills = 23;// 斯露德式杖技能槽， key = 技能槽Id， value = 表Id
     required string perkId=25;//穿戴的Perk.id
 	optional int32 seasonTalentId = 24; //赛季天赋id，未选中的时候该值为：-1
+	optional CalcPropModelInfo baseCalcPropModelInfo=26;//武将基础属性，用于客户端展示计算
+	repeated StickSkillLevel stickSkillLevel = 27; //武将被动技能信息 - 式杖（升级过的技能）
 }
 
 //队伍-武将信息
@@ -758,6 +760,19 @@ message TalentSkill
 	required int32 level=2;//技能等级
 	required int32 state=3;//状态 0：未解锁 1:解锁
 	optional int32 count=4;//技能数量
+}
+
+//被动技能 - 式杖技能等级
+message StickSkillLevel
+{
+	required int32 id=1;//技能ID
+	required int32 level=2;//技能等级
+	required int32 state=3;//状态 0：未解锁 1:解锁
+	optional int32 count=4;//技能数量
+	optional int32 season=5;//是否是赛季技能 0 否 1 是
+	optional string seasonBegin=6;//赛季技能生效时间
+	optional string seasonEnd=7;//赛季技能失效时间
+	optional int32 seasonSkillId=8;//赛季技能ID
 }
 
 //rogue技能

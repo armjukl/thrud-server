@@ -137,6 +137,20 @@ message ResetStickSkill_S2C
     required int32 skillLeaderId = 1;// 所属斯露德Id
 }
 
+//升级武将式杖技能
+message UpgradeStickSkill
+{
+	required int32 leaderId=1;//武将ID
+	required int32 skillId=2;//技能ID
+	required int32 id=3;//leaderWandSkill.xlsx 表id
+}
+
+//升级武将式杖技能返回
+message UpgradeStickSkill_S2C
+{
+	optional LeaderInfo leader=1;//武将信息
+}
+
 // 合成的武将协议
 message CompositionLeader
 {
@@ -169,5 +183,17 @@ message ChangeLeaderFormation
 // 消息内容通过原逻辑子包推回来
 message ChangeLeaderFormation_S2C
 {
+}
+
+//获取武将信息
+message GetLeaderInfo
+{
+	required int32 leaderId=1;//武将ID
+}
+
+message GetLeaderInfo_S2C
+{
+	// required int32 errCode=1;//错误号
+	optional LeaderInfo leader=2;//武将信息
 }
 
