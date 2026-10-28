@@ -1,6 +1,6 @@
 # 斯露德（Thrud/sld）假服 · 协议清单
 
-> 最后更新：2026-10-11 ｜ 当前方案 [`README.md`](README.md) ｜ 待修 [`README-待补功能.md`](README-待补功能.md)
+> 最后更新：2026-10-28 ｜ 当前方案 [`README.md`](README.md) ｜ 待修 [`README-待补功能.md`](README-待补功能.md)
 
 客户端与假服共三层：HTTP(S) → UDP/KCP → GS(`/AppInterface` protobuf)。
 全部协议号定义在 [`proto/CmdDefine.proto`](../proto/CmdDefine.proto)（`enum CmdEnum`，640 项）。
@@ -135,7 +135,15 @@ Lua `HttpClientForLua` 先派发 `completedList` 再派发 `replenishList`，且
 | 11028 | StartSoloBattle | ✅ | 进战斗最小闭环：回 `StartSoloBattle_S2C{result, battleEnterInfo, server}` |
 | 11019 · 11031 · 11032 | BattleLeave · CloseBattleSettle · BattleLeaveFinish | ⚠️ 空 body | 离开/关闭结算，成包即可 |
 | 3004 | OverMainLevel | ✅ | 主线结算 `OverMainLevel_S2C`；胜利写回 `levels[]`（重登保留） |
-| 1001 | UpgradeLeader | ✅ | 武将升级（简化：每次 +1 级，封顶 80）；回空包 + 推 `Data_Push.leaderAttrChanged` |
+| 1001 | UpgradeLeader | ✅ 真扣费 | **B1 重构**：读 C2S `itemInfo=3`（`ProtoHashInt2Int`）→ `Items_Xls.useParam` 折成经验 → `while(lv<本突上限 && exp>=本级需求)` 连升；回空包 + 推 `Data_Push.leaderAttrChanged`(+`changePart`)。材料不足/满级 → **拒单**（§4.1） |
+| 1005 | UpgradeLeaderBreach | ✅ 真扣费 | 突破：付 `LeaderBreak[leaderId, breakNum==本突].consumeId`，`breach+1`；S2C 是**空 message**，失败只能拒单 |
+| 1002 | UpgradeLeaderStar | ✅ 真扣费 | 大阶（星）：付**当前**档 `LeaderStar[lid][star].consumeID`，前提是小阶已满（`star+1` 档无 `slv+1` 行）→ `star+1, starLevel=0`。`star` **从 0 起**（`star*3+starLevel` 是属性节点索引） |
+| 1003 | UpgradeLeaderStarLevel | ✅ 真扣费 | 小阶：付**下一**档 `LeaderStarlevel[lid][star][slv+1].consumeID`；顶档再点 → 拒单 |
+| 1004 | UpgradeLeaderTalentSkill | ✅ 真扣费 | 被动技能升级，`leader` 在**字段 2**；被动集合取自 `Leader_Xls.commonSkillId + talentSkill`（武器技能的 `Skill.maxLevel` 恒为 1，用它会全员满级） |
+| 1008 | UpgradeLeaderActiveSkill | ✅ 真扣费 | 主动技能升级，`leader` 在**字段 1**；上限双卡：本突 `LeaderBreak.skillLevel` ∧ `Skill_Xls.maxLevel` |
+| 1010 | ChangeStickSkill | ✅ 落盘 | 装/换式杖：S2C 三个 required `1/2/3` 原样回显，`LeaderInfo.stickSkills=23`（`key`=槽位、`value`=`LeaderWandSkill` 表 id） |
+| 1011 | ResetStickSkill | ✅ 落盘 | 只清槽位关系 `c.stick`，**不删** `c.stickLv`（技能等级是玩家资产）；S2C 只有 required `skillLeaderId=1` |
+| 1016 | UpgradeStickSkill | ✅ 落盘 | 式杖升级**不扣材料**（贴路 B；客户端自己按 `consumeId ~= 0` 拦），上限取 `TalentSkill_Xls` 里该 skillId 的最大 `skillLevel`；回包 `leader=1` + `stickSkillLevel=27` |
 | 1007 | SwitchClothing | ✅ | 换装，落 `characters[].clothingId`，回 `destinationLeaderBean`（换皮肤必需） |
 | 1203 | SwitchWeapon | ✅ | 换武装：改 `weapons[].leaderId`，回 `weaponInfo/oldWeaponInfo/leader/beforeLeader` |
 | 2000 | SwearHero | ✅ | 抽卡：按池真实掉落（`LotteryInstance→Drop→DropSet→DropGroup`，链最深 11 层，`MAX_DEPTH=32`）；重复角色转意识碎片；`number`=实际出货数；后置 `ShowItem_Push`（结果）+ `Data_Push`（新角色入大厅表）；`recordInfo.itemId` 只写本体（见 §3.1） |
@@ -147,11 +155,30 @@ Lua `HttpClientForLua` 先派发 `completedList` 再派发 `replenishList`，且
 未注册的 msgId（含已抓到的 `50006`）走通用兜底：
 **组一个带 header 的合法空包**——客户端 Lua 按 header 找回调，不回包会永远等。
 
+### 4.1 拒单（`deny`）：合法帧 + 不派发（2026-10-28，B1）
+
+"升级失败"在假服里**不能**回一个正常 ack：养成面板是**收到包就刷新/弹窗**的，
+`UpgradeLeaderTalentSkillHandler` 甚至无条件 `UIHeroLevelUp` 弹"升级成功"。也不能干脆不回：
+不回 → 客户端 20 s 超时挂出 `210001` 网络异常提示。
+
+路 B 的做法是"只准不收包"（进程内用 `EventManager.PostMsg` 决定派不派发，`mockgs_pc.lua:754-762`）；
+HTTP 层的等价物就是 **`GsResponse.deny`**：`gs.ts` 回 `header=0` 的空包。两条实测依据：
+
+- `UploadDataCompletedEventHandler` 只要 `udd.error == 0` 就清 `CurSend` 并 `CloseMsgBlock()`，
+  **不看 header**（客户端 `a47222f1…:116-216`）→ 请求正常收尾、遮罩关掉、不超时。
+- 派发是 `EventManager` 按 header 找注册回调（`HeroMsg.RegisterMsgHandlers`，`5262026f…:21-45`），
+  **header=0 没有监听者** → 一条回调都不跑，面板纹丝不动 = "没升上去"。
+
+所以 B1 的九条失败路径（无此角色 / 材料不足 / 满级 / 顶档再点）一律 `deny(reason)`，
+`server.log` 留一行 `deny msgId=… reason=…`；自检里 deny 用例**额外断言零推送 + 存档未被改动**。
+
 ### 怎么加一个协议
 
 1. 在 `CMD` 里加号；
 2. 写返回 `Buffer` 的构造函数（`pb.concat` / `pb.vfield` / `pb.sfield` / `pb.bfield`）；
 3. 挂进 `HANDLERS`；
-4. `npm run build` 后重启（`./run.sh` 会先 build）。
+4. 在 `test/selftest.mjs` 加一条 `checkHandler(msgId, ...)`：proto required 全覆盖 + **手写字段号断言**
+   （`leader` 在 1 还是 2，各命令不一样，required 自检挡不住串号）+ 落盘断言，并登记进 `TIER1_DONE`；
+5. `npm run build && npm run selftest`，再 `./run.sh` 重启（会先 build）。
 
 字段号/类型查 [`proto/msg.proto`](../proto/msg.proto) 与各业务 proto（`PlayerProto` / `WeaponProto` / `Battle.proto` 等）。
