@@ -1065,7 +1065,70 @@ await check('B1 养成面板的被动集合取自 Leader 表而非武器表', as
   } finally { restore(); }
 });
 
-// 5. 工具链
+// ---------------------------------------------------------------- 4i. deny 的**帧级**行为 (gs.ts)
+// checkHandler 直调 HANDLERS, 而"拒单"是 gs.ts 装配回包时的一个分支 —— 不端到端过一遍
+// handleAppInterface, 自检对"header=0 空包到底成不成帧、有没有误伤正常包"是盲的。
+await check('GS 帧: 养成 deny 回全零合法帧, 与"未注册兜底""成功回包"三种形状互不混淆', async () => {
+  const gs = await import('../dist/gs.js');
+  const u32 = (v) => { const b = Buffer.alloc(4); b.writeUInt32BE(v >>> 0); return b; };
+  const reqOf = (msgId, data) => Buffer.concat([
+    u32(0), u32(0), u32(0), u32(msgId),
+    u32(0), u32(0), u32(0), u32(0), u32(0),   // uid/platform/pfUid/channel/token
+    u32(4321), u32(0), Buffer.from([0]), u32(data.length), data, u32(0),
+    //       packetUUid  [u32 ?=0][u8 ?=0][u32 dataLen]   data  [u32 appendLen]
+  ]);
+  const parse = (f) => {
+    const pushLen = f.readInt32BE(5);
+    const bodyLen = f.readInt32BE(13 + pushLen);
+    return {
+      err: f.readInt32BE(1), pushLen, push: f.subarray(9, 9 + pushLen),
+      header: f.readInt32BE(9 + pushLen), bodyLen,
+      p2cLen: f.readInt32BE(17 + pushLen + bodyLen), total: f.length,
+    };
+  };
+  // 客户端只看 udd.error 就清 CurSend, 所以 err 必须为 0 —— 非 0 会变成超时/异常提示.
+  const fields = (b) => GProto.decodeFields(b);
+  // 底档同 B1: breach=4 才让普攻有升级空间(0 突的 skillLevel 上限会把升级判死 -> 那是另一条用例)
+  const restore = useSave(trainSave((s, c) => { c.breach = 4; }));
+  const ff = path.join(config.paths.logs, 'gs-req-1004.fields.json');
+  const ffBackup = fs.existsSync(ff) ? fs.readFileSync(ff) : null;
+  try {
+    // 1) 拒单: 角色不存在 -> 整帧一个字节的数据段都没有, 存档一分不动
+    const before = fs.readFileSync(SAVE_FILE, 'utf8');
+    const denied = parse(gs.handleAppInterface(reqOf(1004, GProto.vfield(1, 9999999))).body);
+    assert.equal(denied.err, 0, 'deny 必须是 error=0, 否则客户端走超时/异常分支');
+    assert.equal(denied.pushLen, 0, 'deny 不该带 ReturnPackagePush(里面会有 header=1004 -> 面板照样刷新)');
+    assert.equal(denied.header, 0, 'deny 的主回包槽 header 必须是 0 (EventManager 里没有监听者)');
+    assert.equal(denied.bodyLen, 0, 'deny 的主回包必须是空 body');
+    assert.equal(denied.p2cLen, 0, 'deny 不该带 PushMsg2Client');
+    assert.equal(denied.total, 21, `纯定长头 21B(1+4*5), 实际 ${denied.total}B`);
+    assert.equal(fs.readFileSync(SAVE_FILE, 'utf8'), before, '拒单不许把存档写脏');
+
+    // 2) 对照: 未注册的 msgId 仍回"带 header 的合法空包"(客户端不能永远等)
+    const orphan = parse(gs.handleAppInterface(reqOf(50006, Buffer.alloc(0))).body);
+    assert.ok(orphan.pushLen > 0, '未注册消息必须有 ReturnPackagePush, 否则客户端等超时');
+    const pInfo = fields(fields(orphan.push).find((f) => f.field === 1).value);
+    assert.equal(Number(pInfo.find((f) => f.field === 1).value), 4321, 'packetUUid 必须原样带回');
+    assert.equal(Number(fields(pInfo.find((f) => f.field === 2).value).find((f) => f.field === 1).value),
+      50006, '未注册兜底的 header 是请求号');
+
+    // 3) 成功路径: 同一命令材料齐 -> 主包(leader) + 推送(DataPush) 都在 push 里
+    const okReq = GProto.concat(GProto.vfield(1, LID), GProto.vfield(2, COMMON));
+    const ok = parse(gs.handleAppInterface(reqOf(1004, okReq)).body);
+    assert.ok(ok.pushLen > 0, '成功的 UpgradeLeaderTalentSkill 必须回包');
+    const oInfo = fields(fields(ok.push).find((f) => f.field === 1).value);
+    assert.equal(Number(fields(oInfo.find((f) => f.field === 2).value).find((f) => f.field === 1).value),
+      1004, '主包 header 必须是 1004, 客户端才有回调可派');
+    assert.ok(oInfo.filter((f) => f.field === 3).some((f) =>
+      Number(fields(f.value).find((x) => x.field === 1).value) === DPUSH), `push 里要有 DataPush(${DPUSH})`);
+  } finally {
+    restore();
+    if (ffBackup) fs.writeFileSync(ff, ffBackup);
+    else if (fs.existsSync(ff)) fs.unlinkSync(ff);
+  }
+});
+
+// ---------------------------------------------------------------- 5. 工具链
 await check('tools/meta_decrypt.py 能重解 global-metadata.dat', async () => {
   const src = await ensureMetadata();
   if (!src) return results.push(['SKIP', 'APK 不在, 无法取 metadata']);
