@@ -23,6 +23,12 @@ import { ITEM_VALID } from "./data/items.js";
 import { LEADER_DEBRIS } from "./data/leaderdebr.js";
 import { LEADER_QUALITY, WEAPON_GRATE } from "./data/rarity.js";
 import { poolDraw } from "./gacha.js";
+import {
+  checkConsume, countItem, leaderLevelExp, leaderMaxLv, newEffects, payConsume, payItemList,
+  upgradeByExp, type Effects,
+} from "./econ.js";
+import { setSkillLv, skillConsumeId, skillLv, stickMaxLv, upgradeSkill } from "./skills.js";
+import { all, arr } from "./tbl.js";
 import { characterById, defaultCharacter, loadSave, newWeapon, saveSave, type SaveCharacter, type SaveData, type SaveWeapon } from "./save.js";
 
 export interface GsRequest {
@@ -45,6 +51,12 @@ export interface GsResponse {
    * 会被 Lua 的 Ignore_Replenish_MsgID 过滤). extra 随之改走 PushMsg2Client(同样进 completedList).
    */
   mainInCompleted?: boolean;
+  /**
+   * 置为失败原因字符串 = **"合法帧 + 不派发"** (对齐路 B 的"只准不收包"):
+   * gs.ts 回 header=0 的空包, 客户端照常清 CurSend/关遮罩, 但 header 找不到回调 -> 面板不动.
+   * 用在"升级失败却会弹假窗"的命令上 (UpgradeLeaderTalentSkillHandler 是无条件弹 UIHeroLevelUp).
+   */
+  deny?: string;
 }
 
 export type GsResult = Buffer | GsResponse;
@@ -90,6 +102,15 @@ export const CMD = {
   OverMainLevel: 3004,
   SwitchClothing: 1007,
   UpgradeLeader: 1001,
+  // 养成 (B1): 等级/突破/位阶/技能. 号见 proto/CmdDefine.proto:68-83
+  UpgradeLeaderStar: 1002,
+  UpgradeLeaderStarLevel: 1003,
+  UpgradeLeaderTalentSkill: 1004,
+  UpgradeLeaderBreach: 1005,
+  UpgradeLeaderActiveSkill: 1008,
+  ChangeStickSkill: 1010,
+  ResetStickSkill: 1011,
+  UpgradeStickSkill: 1016,
   SwitchWeapon: 1203,
   GetPayShopData: 30300,
   DataPush: 900011,
@@ -161,6 +182,41 @@ function u32(v: number | bigint): Buffer {
   const b = Buffer.alloc(4);
   b.writeUInt32BE(Number(BigInt(v) & 0xffffffffn) >>> 0);
   return b;
+}
+
+// 拒单: 合法帧 + 什么都不派发 (见 GsResponse.deny). 养成类"不能升/材料不足"全走这里,
+// 免得回一个等级没变的 S2C 让客户端弹出假升级窗.
+const deny = (reason: string): GsResult => ({ body: Buffer.alloc(0), pushes: [], deny: reason });
+
+/** 请求里 repeated ProtoHashInt2Int{key=1,value=2} 字段 -> [{key,value}] (升级素材列表). */
+function reqHashList(req: GsRequest | undefined, field: number): { key: number; value: number }[] {
+  const out: { key: number; value: number }[] = [];
+  if (!req?.proto) return out;
+  for (const f of pb.decodeFields(req.proto)) {
+    if (f.field !== field || !Buffer.isBuffer(f.value)) continue;
+    const inner = pb.decodeFields(f.value);
+    const key = inner.find((x) => x.field === 1);
+    const val = inner.find((x) => x.field === 2);
+    out.push({ key: Number(key?.value ?? 0), value: Number(val?.value ?? 0) });
+  }
+  return out;
+}
+
+/** 按列等值找一行 (养成表都是"leaderId + 档位"这种复合定位, row(id) 走不到). */
+function findRow(table: string, cond: Record<string, number>): Record<string, any> | undefined {
+  const ks = Object.entries(cond);
+  return all(table).find((r) => ks.every(([k, v]) => Number(r[k] || 0) === v));
+}
+
+/**
+ * 养成后刷新面板的那一条: Data_Push{ leaderAttrChanged=5{LeaderInfo}, changePart=10{Part} }.
+ * 扣了材料必须同时推 changePart —— 背包走的是物品通道, 只推 leader 的话素材数量在客户端不变.
+ */
+function leaderDataPush(s: SaveData, c: SaveCharacter, eff: Effects): Buffer {
+  const parts = [pb.bfield(5, pb.bfield(1, leaderInfo(s, c)))];
+  const ids = [...new Set(eff.items)];
+  if (ids.length) parts.push(pb.bfield(10, pb.concat(...ids.map((id) => pb.bfield(1, partBody(id, countItem(s, id)))))));
+  return pb.concat(...parts);
 }
 
 // ---- 各 S2C 消息体 ----
@@ -248,6 +304,15 @@ const weaponOnlyId = (leaderId: number): string => "7000000" + leaderId;
 // 该角色 Leader 表的默认武器配置 id (穿戴式仗).
 const weaponCfgOf = (leaderId: number): number => LEADER[leaderId]?.[0] ?? 0;
 
+/**
+ * 养成面板的被动技能集合 = Leader_Xls.commonSkillId(普攻) + talentSkill(突破解锁的被动).
+ * **不是**武器的 weaponSkillId: 那是武装自带的战斗被动(走 WeaponInfo 展示), 且它们在 Skill_Xls
+ * 里 maxLevel 恒为 1 —— 放进来会让"被动升级"每个都判成满级而永远拒绝.
+ */
+const talentIdsOf = (leaderId: number): number[] =>
+  [...new Set([...arr("Leader", leaderId, "commonSkillId"), ...arr("Leader", leaderId, "talentSkill")]
+    .map(Number).filter((n) => n > 0))];
+
 // 角色终值属性 (自身等级/突破 + 穿戴武装 + 存档覆盖); 表缺失时回退占位.
 function heroAttrs(s: SaveData, c: SaveCharacter): AttrKV {
   const w = equippedWeapon(s, c.id);
@@ -291,6 +356,16 @@ function leaderInfo(s: SaveData, c: SaveCharacter): Buffer {
   const wm = WEAPON[w.cfg];
   const shooting = wm ? wm[0] : 0;
   const weaponSkills = wm ? wm[1] : [];
+  // 式杖槽 stickSkills=23: key=槽Id, value=LeaderWandSkill 表id (Change/ResetStickSkill 落进 c.stick).
+  const stickSlots = Object.entries(c.stick)
+    .filter(([, sid]) => sid > 0)
+    .sort((a, b) => Number(a[0]) - Number(b[0]))
+    .map(([pos, sid]) => pb.bfield(23, protoHash(Number(pos), sid)));
+  // stickSkillLevel=27 只列**升级过**的(表注释"升级过的技能"), 1 级由客户端按默认显示.
+  const stickLevels = Object.entries(c.stickLv)
+    .filter(([, lv]) => lv > 1)
+    .sort((a, b) => Number(a[0]) - Number(b[0]))
+    .map(([sid, lv]) => pb.bfield(27, stickSkillLevelBuf(Number(sid), lv)));
   return pb.concat(
     pb.vfield(1, c.id),   // id
     pb.vfield(2, c.level), // level
@@ -302,28 +377,33 @@ function leaderInfo(s: SaveData, c: SaveCharacter): Buffer {
     pb.vfield(8, c.clothingId), // clothingId
     pb.sfield(9, w.onlyId),     // weaponId = 穿戴式仗的 onlyId (required string)
     pb.bfield(10, battlePropModelInfo(heroPower(c.id, c.level, c.breach, w.cfg), heroAttrs(s, c))), // calcPropModelInfo
-    ...weaponSkills.map((id) => pb.bfield(11, talentSkill(id))), // talentSkills=11
+    ...talentIdsOf(c.id).map((id) => pb.bfield(11, talentSkill(id, skillLv(c, id, "talent")))), // talentSkills=11
     pb.vfield(12, c.breach),    // breachLevel=12 (缺则 LeaderAttrChangedHandler 误判去开突破界面)
     ...(lm
       ? [
-          pb.bfield(17, activeSkill(shooting, 1, 1)), // activeSkills=17 武器射击
-          pb.bfield(17, activeSkill(lm[1], 1, 2)),    // 主动
-          pb.bfield(17, activeSkill(lm[2], 1, 3)),    // 极奏
+          pb.bfield(17, activeSkill(shooting, skillLv(c, shooting, "active"), 1)), // activeSkills=17 武器射击
+          pb.bfield(17, activeSkill(lm[1], skillLv(c, lm[1], "active"), 2)),       // 主动
+          pb.bfield(17, activeSkill(lm[2], skillLv(c, lm[2], "active"), 3)),       // 极奏
         ]
       : []),
     pb.vfield(22, c.signLv),    // signLv (required)
+    ...stickSlots,
     pb.sfield(25, c.perkId),    // perkId (required string)
+    ...stickLevels,
   );
 }
 
 // 背包道具 -> Part{ required id=1; required num=2; required uuid=4(string) }. 只发 Items_Xls 里
 // 存在的 id(type=2 道具), 否则客户端 ItemData:Init 对缺行 id 无保护地 index -> 崩.
+const partBody = (id: number, n: number): Buffer =>
+  pb.concat(pb.vfield(1, id), pb.vfield(2, n), pb.sfield(4, String(id)));
+
 function partsBody(s: SaveData): Buffer[] {
   const out: Buffer[] = [];
   for (const [k, n] of Object.entries(s.items)) {
     const id = Number(k);
     if (!ITEM_VALID.has(id) || !(n > 0)) continue;
-    out.push(pb.concat(pb.vfield(1, id), pb.vfield(2, n), pb.sfield(4, k)));
+    out.push(partBody(id, n));
   }
   return out;
 }
@@ -651,10 +731,18 @@ function activeSkill(id: number, level: number, type: number): Buffer {
   return pb.concat(pb.vfield(1, id), pb.vfield(2, level), pb.vfield(3, type));
 }
 
-// TalentSkill{ required id/level/state } —— 来自武器 weaponSkillId.
-function talentSkill(id: number): Buffer {
-  return pb.concat(pb.vfield(1, id), pb.vfield(2, 1), pb.vfield(3, 1), pb.vfield(4, 1));
+// TalentSkill{ required id/level/state } —— 养成面板取自 Leader 表, 战斗包取自武器 weaponSkillId.
+function talentSkill(id: number, level: number): Buffer {
+  return pb.concat(pb.vfield(1, id), pb.vfield(2, level), pb.vfield(3, 1), pb.vfield(4, 1));
 }
+
+// ProtoHashInt2Int{ required key=1; required value=2 }
+const protoHash = (key: number, value: number): Buffer =>
+  pb.concat(pb.vfield(1, key), pb.vfield(2, value));
+
+// StickSkillLevel{ required id=1 level=2 state=3 } —— id 是**技能id**(不是 LeaderWandSkill 表id).
+const stickSkillLevelBuf = (id: number, level: number): Buffer =>
+  pb.concat(pb.vfield(1, id), pb.vfield(2, level), pb.vfield(3, 1));
 
 // LeaderBattleInfo (msg.proto): 战斗所需的武将数据; 基础数值取自存档, 武器/技能 id 取自客户端表
 // (data/leader.ts, data/weapon.ts). required 只有 id; weapon/activeSkills/talentSkills 供 Core 建单位.
@@ -675,12 +763,12 @@ function leaderBattleInfo(s: SaveData, c: SaveCharacter): Buffer {
     pb.vfield(8, c.clothingId),
     pb.bfield(9, weaponInfoFromInst(w)), // weapon
     pb.bfield(10, battlePropModelInfo(heroPower(c.id, c.level, c.breach, w.cfg), heroAttrs(s, c))), // calcPropModelInfo
-    ...weaponSkills.map((id) => pb.bfield(11, talentSkill(id))), // talentSkills
+    ...weaponSkills.map((id) => pb.bfield(11, talentSkill(id, skillLv(c, id, "talent")))), // talentSkills
     ...(lm
       ? [
-          pb.bfield(12, activeSkill(shooting, 1, 1)), // 武器射击
-          pb.bfield(12, activeSkill(lm[1], 1, 2)),    // 主动
-          pb.bfield(12, activeSkill(lm[2], 1, 3)),    // 极奏
+          pb.bfield(12, activeSkill(shooting, skillLv(c, shooting, "active"), 1)), // 武器射击
+          pb.bfield(12, activeSkill(lm[1], skillLv(c, lm[1], "active"), 2)),       // 主动
+          pb.bfield(12, activeSkill(lm[2], skillLv(c, lm[2], "active"), 3)),       // 极奏
         ]
       : []),
     pb.vfield(14, c.signLv),  // signLv
@@ -1006,14 +1094,165 @@ function upgradeLeaderS2C(req: GsRequest): GsResult {
   const s = loadSave();
   const lid = reqNum(req, 1) ?? 0;
   const c = s.characters.find((x) => x.id === lid);
-  if (c) {
-    c.level = Math.min(80, (c.level || 1) + 1); // 简化: 每次 +1 (封顶 80)
-    saveSave(s);
-    log("info", "leader", `UpgradeLeader ${lid} -> lv${c.level}`);
+  if (!c) return deny(`UpgradeLeader 无此角色 ${lid}`);
+  const eff = newEffects();
+  const [gained, why] = payItemList(s, reqHashList(req, 3), eff);
+  if (why) return deny(`UpgradeLeader ${lid} 材料不足 ${why}`);
+  c.exp += gained;
+  const cap = leaderMaxLv(c.id, c.breach) || 80;   // 本突上限; 无突破行(表缺)才兜 80
+  const r = upgradeByExp(c.level, c.exp, cap, leaderLevelExp);
+  c.level = r.level;
+  c.exp = r.exp;
+  saveSave(s);
+  // 到顶时经验照旧入账(路 B 同口径: 攒着的经验在下次突破后一次滚级), 所以不 deny 也不报错.
+  log("info", "leader", `UpgradeLeader ${lid} +${gained}exp -> lv${r.level}/${cap} exp=${r.exp} raised=${r.raised}`);
+  return { body: Buffer.alloc(0), pushes: [[CMD.DataPush, leaderDataPush(s, c, eff)]] };
+}
+
+// 提升武将突破等级: 扣 LeaderBreak[leaderId, breakNum==本突].consumeId, breach+1.
+// S2C 是空 message, 客户端的突破成功弹窗全靠随后那条 Data_Push.leaderAttrChanged
+// (HeroMsg.LeaderAttrChangedHandler 比 bfBreak ~= breachLevel 才开 UIHeroBreakUp).
+function upgradeLeaderBreachS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const lid = reqNum(req, 1) ?? 0;
+  const c = s.characters.find((x) => x.id === lid);
+  if (!c) return deny(`Breach 无此角色 ${lid}`);
+  const row = findRow("LeaderBreak", { leaderId: lid, breakNum: c.breach });
+  const cid = row ? Number(row.consumeId || 0) : 0;
+  if (!cid) return deny(`breachRow? ${lid} #${c.breach}`);
+  const [ok, why] = checkConsume(s, cid);
+  if (!ok) return deny(`breachCost ${why}`);
+  const eff = newEffects();
+  payConsume(s, cid, eff);
+  c.breach += 1;
+  saveSave(s);
+  log("info", "leader", `UpgradeLeaderBreach ${lid} #${c.breach - 1}->#${c.breach} 上限=${leaderMaxLv(c.id, c.breach)}`);
+  return { body: Buffer.alloc(0), pushes: [[CMD.DataPush, leaderDataPush(s, c, eff)]] };
+}
+
+// 位阶(大阶段 star / 小阶段 starLevel) 收费档口径抄客户端
+// UIHeroDevelop_QualityTabCtrl:OnLvUpBtnClick —— 15 个节点线性排开(index = star*3 + starLevel),
+//   STARLV 节点扣**目标档**(next 行, 客户端展示的就是这档的消耗),
+//   STAR  节点扣**当前档**(LeaderStar[star].consumeID), 且要求本 star 的小阶已满.
+// 下一档行不存在就拒. 两个 handler 仅 SetLeaderDataForId + 发事件, 所以回包只带 leader(字段 2).
+function upgradeLeaderStarLevelS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const lid = reqNum(req, 1) ?? 0;
+  const c = s.characters.find((x) => x.id === lid);
+  if (!c) return deny(`StarLevel 无此角色 ${lid}`);
+  const nxt = findRow("LeaderStarlevel", { leaderId: lid, star: c.star, starLevel: c.starLevel + 1 });
+  if (!nxt) return deny(`starLevel 顶档 ${lid} ${c.star}-${c.starLevel}`);
+  const cid = Number(nxt.consumeID || 0);
+  if (!cid) return deny(`starLevel 无消耗档 ${lid} ${c.star}-${c.starLevel + 1}`);
+  const [ok, why] = checkConsume(s, cid);
+  if (!ok) return deny(`starLvCost ${why}`);
+  const eff = newEffects();
+  payConsume(s, cid, eff);
+  c.starLevel += 1;
+  saveSave(s);
+  log("info", "leader", `UpgradeLeaderStarLevel ${lid} -> ${c.star}-${c.starLevel}`);
+  return { body: pb.bfield(2, leaderInfo(s, c)), pushes: [[CMD.DataPush, leaderDataPush(s, c, eff)]] };
+}
+
+function upgradeLeaderStarS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const lid = reqNum(req, 1) ?? 0;
+  const c = s.characters.find((x) => x.id === lid);
+  if (!c) return deny(`Star 无此角色 ${lid}`);
+  const cur = findRow("LeaderStar", { leaderId: lid, star: c.star });
+  const nxt = findRow("LeaderStar", { leaderId: lid, star: c.star + 1 });
+  if (!cur || !nxt) return deny(`star 顶档 ${lid} star${c.star}`);   // 无下一档 = 已是最高位阶
+  // 大阶段晋升前提: 本 star 的小阶段已满(再下一级小阶行不存在). GetIsUnLockStarType 注释即此语义.
+  if (findRow("LeaderStarlevel", { leaderId: lid, star: c.star, starLevel: c.starLevel + 1 })) {
+    return deny(`starNeedMaxLv ${lid} ${c.star}-${c.starLevel}`);
   }
-  // Data_Push{ leaderAttrChanged=5{ repeated LeaderInfo leaderInfo=1 } }
-  const push = pb.bfield(5, pb.bfield(1, c ? leaderInfo(s, c) : Buffer.alloc(0)));
-  return { body: Buffer.alloc(0), pushes: c ? [[CMD.DataPush, push]] : [] };
+  const cid = Number(cur.consumeID || 0);
+  if (!cid) return deny(`star 无消耗档 ${lid} star${c.star}`);
+  const [ok, why] = checkConsume(s, cid);
+  if (!ok) return deny(`starCost ${why}`);
+  const eff = newEffects();
+  payConsume(s, cid, eff);
+  c.star += 1;
+  c.starLevel = 0;   // 升上去后"坐在大位阶上"
+  saveSave(s);
+  log("info", "leader", `UpgradeLeaderStar ${lid} -> star${c.star}`);
+  return { body: pb.bfield(2, leaderInfo(s, c)), pushes: [[CMD.DataPush, leaderDataPush(s, c, eff)]] };
+}
+
+// 潜能觉醒(主动/极奏 1008) 与 普攻被动(1004): 请求都是 {leaderId=1, skillId=2}, 收费走
+// SkillValue/TalentSkill 当前级的 consumeId, 上限双卡(本突 skillLevel + Skill.maxLevel).
+// 差别在回包字段号与客户端行为:
+//   UpgradeLeaderActiveSkill_S2C.leader=1 —— handler 无条件读 msg.leader.id 与 #msg.leader.activeSkills,
+//     不给就当场崩; 等级确实涨了才弹 UIHeroLevelUp.
+//   UpgradeLeaderTalentSkill_S2C.leader=2 —— handler **无条件**弹 UIHeroLevelUp, 所以"不能升/材料不足"
+//     只能 deny(回一个等级没变的包 = 弹假升级窗).
+function upgradeSkillS2C(cmd: string, leaderField: number, kind: "active" | "talent"): GsBuilder {
+  return (req: GsRequest): GsResult => {
+    const s = loadSave();
+    const lid = reqNum(req, 1) ?? 0;
+    const sid = reqNum(req, 2) ?? 0;
+    const c = s.characters.find((x) => x.id === lid);
+    if (!c) return deny(`${cmd} 无此角色 ${lid}`);
+    const eff = newEffects();
+    const cid = skillConsumeId(sid, skillLv(c, sid, kind), kind);
+    const [ok, why] = upgradeSkill(s, c, sid, kind, eff);
+    if (!ok) return deny(`${cmd} ${why}`);
+    saveSave(s);
+    log("info", "leader", `${cmd} ${lid} skill=${sid} -> lv${skillLv(c, sid, kind)} consumeId=${cid}`);
+    return { body: pb.bfield(leaderField, leaderInfo(s, c)), pushes: [[CMD.DataPush, leaderDataPush(s, c, eff)]] };
+  };
+}
+
+// 式杖技能升级(1016): 上限取 TalentSkill_Xls 里该 skillId 的最大 skillLevel(Skill.maxLevel 对式杖恒 1).
+// 暂不扣材料(路 B 同口径: LeaderWandSkill 的 8200xxx 是获取途径/跳转 id, 不是价格, 无从坐实),
+// 客户端也已在 UI 侧用 talentSkill.consumeId ~= 0 卡住入口. 到顶时**照旧回当前 leader**
+// (客户端只 SetLeaderDataForId + 发事件, UIStickSkillLevelUp 已注释掉, 不会弹假窗).
+function upgradeStickSkillS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const lid = reqNum(req, 1) ?? 0;
+  const sid = reqNum(req, 2) ?? 0;
+  const rowId = reqNum(req, 3) ?? 0;
+  const c = s.characters.find((x) => x.id === lid);
+  if (!c || !sid) return deny(`UpgradeStickSkill 参数 lid=${lid} skill=${sid}`);
+  const cur = skillLv(c, sid, "stick");
+  const max = stickMaxLv(sid);
+  if (cur < max) setSkillLv(c, sid, "stick", cur + 1);
+  saveSave(s);
+  log("info", "leader", `UpgradeStickSkill ${lid} skill=${sid} 表id=${rowId} lv=${cur}->${skillLv(c, sid, "stick")}/${max}`);
+  return { body: pb.bfield(1, leaderInfo(s, c)), pushes: [[CMD.DataPush, leaderDataPush(s, c, newEffects())]] };
+}
+
+// 式杖槽切换(1010): {skillLeaderId=1, skillPosition=2, changeSkillId=3}, S2C 原样回显三个 required.
+// 无消耗(在已解锁集合里换); changeSkillId=0 = 卸下该槽. 客户端随后本地 SetWandSkill 并弹 551 通知.
+function changeStickSkillS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const lid = reqNum(req, 1) ?? 0;
+  const pos = reqNum(req, 2) ?? 0;
+  const sid = reqNum(req, 3) ?? 0;
+  const c = s.characters.find((x) => x.id === lid);
+  if (!c) return deny(`ChangeStickSkill 无此角色 ${lid}`);
+  if (sid > 0) c.stick[String(pos)] = sid; else delete c.stick[String(pos)];
+  saveSave(s);
+  log("info", "leader", `ChangeStickSkill ${lid} 槽${pos} <- 表id=${sid}`);
+  return {
+    body: pb.concat(pb.vfield(1, lid), pb.vfield(2, pos), pb.vfield(3, sid)),
+    pushes: [[CMD.DataPush, leaderDataPush(s, c, newEffects())]],
+  };
+}
+
+// 式杖槽重置(1011): 只清**装备关系** stick, 不清 stickLv —— 升级过的技能等级是玩家资产.
+function resetStickSkillS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const lid = reqNum(req, 1) ?? 0;
+  const c = s.characters.find((x) => x.id === lid);
+  if (!c) return deny(`ResetStickSkill 无此角色 ${lid}`);
+  c.stick = {};
+  saveSave(s);
+  log("info", "leader", `ResetStickSkill ${lid} (等级保留: ${Object.keys(c.stickLv).length} 条)`);
+  return {
+    body: pb.vfield(1, lid),
+    pushes: [[CMD.DataPush, leaderDataPush(s, c, newEffects())]],
+  };
 }
 
 // SwitchWeapon{ required leaderId=1; required weaponId=2(onlyId string) } -> SwitchWeapon_S2C.
@@ -1079,6 +1318,16 @@ export const HANDLERS: Record<number, GsBuilder> = {
   [CMD.ChangeSecretary]: changeSecretaryS2C,
   [CMD.SwitchClothing]: switchClothingS2C,
   [CMD.UpgradeLeader]: upgradeLeaderS2C,
+  // 养成 (B1). 回包字段号不统一(ActiveSkill/Stick 的 leader=1, Talent/Star/StarLevel 的 leader=2),
+  // 是逐条对着 proto 与客户端 handler 核过的 —— 写错一位 optional 字段, required 自检抓不到.
+  [CMD.UpgradeLeaderBreach]: upgradeLeaderBreachS2C,
+  [CMD.UpgradeLeaderStar]: upgradeLeaderStarS2C,
+  [CMD.UpgradeLeaderStarLevel]: upgradeLeaderStarLevelS2C,
+  [CMD.UpgradeLeaderActiveSkill]: upgradeSkillS2C("UpgradeLeaderActiveSkill", 1, "active"),
+  [CMD.UpgradeLeaderTalentSkill]: upgradeSkillS2C("UpgradeLeaderTalentSkill", 2, "talent"),
+  [CMD.UpgradeStickSkill]: upgradeStickSkillS2C,
+  [CMD.ChangeStickSkill]: changeStickSkillS2C,
+  [CMD.ResetStickSkill]: resetStickSkillS2C,
   [CMD.SwitchWeapon]: switchWeaponS2C,
   [CMD.GetPayShopData]: getPayShopDataS2C,
   // 战斗: 11028 进战斗(核心), 11003 战斗服 KCP 登录, 11018/11019/11031/11032 结算与离开

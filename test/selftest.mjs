@@ -627,6 +627,8 @@ function useSave(content) {
 // opt: cmd(默认按 CmdDefine 反查) · s2c(默认 `${cmd}_S2C`, 显式传 null 表示"proto 里没有回体消息")
 //      req(C2S Buffer) · save(跑前写进 data/save.json 的档) · fields(dec,ctx) 手写字段号断言(防 1-vs-2 串号)
 //      push([[推送头, 消息名]]) · after(loadSave() 的结果, ctx) 断言真落盘了
+//      deny(RegExp|true): 期望 handler 拒单 —— 拒单**不该有回体也不该改档**, 所以这时跳过
+//      required 断言、改跑 opt.after 去断言"什么都没变"(材料没扣、等级没动)。
 async function checkHandler(title, msgId, opt = {}) {
   await check(title, async () => {
     const { HANDLERS } = await import('../dist/payloads.js');
@@ -642,17 +644,32 @@ async function checkHandler(title, msgId, opt = {}) {
     const restore = useSave(opt.save);
     try {
       const res = h({ msgId, packetUUid: opt.uid ?? 1, proto: opt.req ?? Buffer.alloc(0), headerHex: '' });
+      const ctx = {
+        pb, ps, res,
+        // 推送在 pushes(随主包的 packetBodyInfoS) 或 extra(后一包), 两处都找得到才算数。
+        push: (head) => {
+          const p = (res.pushes ?? []).find(([hh]) => hh === head) ?? (res.extra ?? []).find(([hh]) => hh === head);
+          return p ? pb.decodeFields(p[1]) : null;
+        },
+      };
+      if (opt.deny) {
+        assert.ok(!Buffer.isBuffer(res) && res.deny, `期望拒单, 实际回了 body=${(res.body ?? res).length}B`);
+        if (opt.deny !== true) assert.match(res.deny, opt.deny, `拒单原因不对: ${res.deny}`);
+        assert.equal((res.pushes ?? []).length + (res.extra ?? []).length, 0, '拒单不该带任何推送(推送会让客户端刷新/弹窗)');
+        if (opt.after) opt.after(loadSave(), { ...ctx, dec: [] });
+        return;
+      }
       const body = Buffer.isBuffer(res) ? res : res.body;
       assert.ok(Buffer.isBuffer(body), `${cmd} 的回包不是 Buffer`);
       const dec = pb.decodeFields(body);
       if (s2c) ps.assertRequired(`${cmd}(${msgId}) 回包`, s2c, dec, { pb, maxDepth: depth });
       for (const [head, msg] of opt.push ?? []) {
-        const p = (res.extra ?? []).find(([hh]) => hh === head);
-        assert.ok(p, `extra 里没有推送 ${head} (${msg})`);
-        ps.assertRequired(`${cmd}(${msgId}) 推送 ${head}`, msg, pb.decodeFields(p[1]), { pb, maxDepth: depth });
+        const d = ctx.push(head);
+        assert.ok(d, `pushes/extra 里没有推送 ${head} (${msg})`);
+        ps.assertRequired(`${cmd}(${msgId}) 推送 ${head}`, msg, d, { pb, maxDepth: depth });
       }
-      if (opt.fields) opt.fields(dec, { pb, ps, res, body, has: (n) => ps.hasField(dec, n) });
-      if (opt.after) opt.after(loadSave(), { pb, ps, dec, res });
+      if (opt.fields) opt.fields(dec, { ...ctx, body, has: (n) => ps.hasField(dec, n) });
+      if (opt.after) opt.after(loadSave(), { ...ctx, dec });
     } finally {
       restore();
     }
@@ -690,8 +707,8 @@ await check('proto: .proto 解析器读得出 required, 少发一个就红灯', 
   assert.throws(() => ps.assertRequired('负控D', 'LeaderInfo', pb.decodeFields(liShort), { pb }), /9 string weaponId 缺失/);
 });
 
-// 已注册的 41 条全部过一遍 required: 空请求是最坏输入(走各 handler 的兜底分支), 兜底包也得合规.
-await check('proto: 已注册 41 条 handler 的回包 required 全覆盖', async () => {
+// 已注册的全部 handler 过一遍 required: 空请求是最坏输入(走各 handler 的兜底分支), 兜底包也得合规.
+await check('proto: 已注册 handler 的回包 required 全覆盖 (空请求兜底)', async () => {
   const { HANDLERS } = await import('../dist/payloads.js');
   const pb = await import('../dist/proto.js');
   const ACK_ONLY = {                       // proto 里本就没有回体消息, 只回通用 ack
@@ -703,7 +720,7 @@ await check('proto: 已注册 41 条 handler 的回包 required 全覆盖', asyn
     21001: 'GetAllActivity_s2c',           // 全 proto 里唯一的小写 s2c
   };
   const restore = useSave(undefined);
-  let checked = 0, withReq = 0;
+  let checked = 0, withReq = 0, denied = 0;
   try {
     for (const id of Object.keys(HANDLERS).map(Number).sort((a, b) => a - b)) {
       const cmd = ps.cmdOf(id);
@@ -712,6 +729,13 @@ await check('proto: 已注册 41 条 handler 的回包 required 全覆盖', asyn
       const s2c = NAMING[id] ?? `${cmd}_S2C`;
       assert.ok(ps.hasMsg(s2c), `${id} ${cmd}: 回体消息 ${s2c} 不在 proto 里(改名或解析退化)`);
       const res = HANDLERS[id]({ msgId: id, packetUUid: 1, proto: Buffer.alloc(0), headerHex: '' });
+      // 空请求 = 没有 leaderId, 养成类必须**拒单**(gs.ts 回 header=0), 而不是编一个等级没变的回体.
+      if (!Buffer.isBuffer(res) && res.deny) {
+        assert.match(res.deny, /.+/, `${id} ${cmd}: deny 原因是空串`);
+        assert.equal((res.pushes ?? []).length, 0, `${id} ${cmd}: 拒单还带推送`);
+        denied++;
+        continue;
+      }
       const body = Buffer.isBuffer(res) ? res : res.body;
       ps.assertRequired(`${cmd}(${id}) 空请求回包`, s2c, pb.decodeFields(body), { pb, maxDepth: 2 });
       checked++;
@@ -720,7 +744,10 @@ await check('proto: 已注册 41 条 handler 的回包 required 全覆盖', asyn
   } finally {
     restore();
   }
-  assert.equal(checked, 39, `应有 39 条带消息体的 handler(41 - ${Object.keys(ACK_ONLY).length} 条纯 ack)`);
+  assert.equal(checked + denied, Object.keys(HANDLERS).length - Object.keys(ACK_ONLY).length,
+    '有条 handler 既没回合规包也没拒单(从这条检查里漏出去了)');
+  assert.ok(checked >= 38, `应有 38 条以上带消息体的 handler, 现在只有 ${checked}`);
+  assert.ok(denied >= 9, `养成 9 条(1001/1002/1003/1004/1005/1008/1010/1011/1016)空请求都该拒单, 实际拒了 ${denied} 条`);
   assert.ok(withReq >= 12, `带 required 的回包只有 ${withReq} 条被真查过, 覆盖面退化`);
 });
 
@@ -741,7 +768,7 @@ await check('proto: 注册表完整 (基线 handler 不掉 / 第一档进度对�
   assert.equal(new Set(TIER1_NEW).size, 28, '清单里有重复号');
   for (const id of TIER1_NEW) assert.ok(ps.cmdOf(id), `${id} 不是 CmdDefine 里的合法号`);
   // TIER1_DONE 每批做完往里加; "未注册数" 必须等于"声明还没做的数量" —— 偷偷接了不登记就红灯
-  const TIER1_DONE = [];
+  const TIER1_DONE = [1002, 1003, 1004, 1005, 1008, 1010, 1011, 1016];   // B1 养成(1001 重构不在此列)
   const stillMissing = TIER1_NEW.filter((id) => !registered.has(id)).sort((a, b) => a - b);
   const declared = TIER1_NEW.filter((id) => !TIER1_DONE.includes(id)).sort((a, b) => a - b);
   assert.deepEqual(stillMissing, declared,
@@ -770,7 +797,275 @@ await checkHandler('checkHandler: 现有 10051 GetSignReward 空请求不炸', 1
   after: (s, { res }) => assert.ok(Buffer.isBuffer(res.body ?? res), '回包是 Buffer'),
 });
 
-// ---------------------------------------------------------------- 5. 工具链
+// ---------------------------------------------------------------- 4h. B1 养成 (8 新 + 1001 重构)
+// 这九条是全档里最容易"回得出去、客户端不动"的一类: required 只有 LeaderInfo 那一坨,
+// 而 leader 的**字段号每条都不一样**(ActiveSkill/Stick=1, Talent/Star/StarLevel=2),
+// optional 字段串号 required 自检抓不到 -> 每条手写 has(1)/has(2) 断言。
+const GProto = await import('../dist/proto.js');
+const DPUSH = 900011;                     // CMD.DataPush
+const LID = 2001001;                      // 底档里一定有的角色
+const ACT = 20010120;                     // LEADER[2001001].activeSkillId
+const COMMON = 1601010;                   // Leader.commonSkillId[1] —— 唯一能升级的"被动"(1..10 级)
+const LOCKED_TALENT = 1701010;            // 突破解锁的被动, Skill.maxLevel=1 -> 升一次就该被拒
+const STICK = 1800000;                    // 式杖技能, TalentSkill 里确有 1..10 级
+const WAND_ROW = 200101;                  // LeaderWandSkill 表id (skillId=[1800000], skillOrder=1)
+const hash = (k, v) => GProto.bfield(3, GProto.concat(GProto.vfield(1, k), GProto.vfield(2, v)));
+
+// 养成用例的底档: 拿仓库里的 data/save.json, 把 2001001 归零 + 把各条 consume 的材料备齐.
+// (10=金币 1070001=技能材料 3001001=位阶材料 1080031/32=突破材料 1020004=经验素材 2000exp/份)
+const trainSave = (mut) => {
+  const s = JSON.parse(fs.readFileSync(SAVE_FILE, 'utf8'));
+  const c = s.characters.find((x) => x.id === LID);
+  assert.ok(c, `data/save.json 里要有角色 ${LID} (养成用例的底档)`);
+  Object.assign(c, { level: 1, exp: 0, star: 0, starLevel: 0, breach: 0, activeLv: {}, talentLv: {}, stick: {}, stickLv: {} });
+  s.items = { ...s.items, 1020004: 5, 1070001: 50, 3001001: 50, 1080031: 20, 1080032: 20 };
+  s.money = { ...s.money, 10: 999999 };
+  if (mut) mut(s, c);
+  return s;
+};
+
+// 回包/推送里那条 LeaderInfo: 从 Data_Push(5) 或裸 leader 字段里挖出来
+const leaderFromPush = (dec) => {
+  const attr = dec.find((f) => f.field === 5);
+  if (!attr) return null;
+  const inner = GProto.decodeFields(attr.value).find((f) => f.field === 1);
+  return inner ? GProto.decodeFields(inner.value) : null;
+};
+
+await checkHandler('B1 1001 UpgradeLeader: 扣素材换经验并按 LeaderLv 曲线滚级', 1001, {
+  save: trainSave(),
+  req: GProto.concat(GProto.vfield(1, LID), hash(1020004, 3)),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { res }) => {
+    assert.equal(dec.length, 0, 'UpgradeLeader_S2C 是空 message, 任何字段都是编出来的');
+    const ddec = GProto.decodeFields(res.pushes.find(([h]) => h === DPUSH)[1]);
+    assert.ok(leaderFromPush(ddec), 'Data_Push 里要有 leaderAttrChanged=5');
+    assert.ok(ddec.some((f) => f.field === 10), '扣了材料必须同推 changePart=10, 否则客户端背包数量不动');
+  },
+  after: (s, { res }) => {
+    const c = s.characters.find((x) => x.id === LID);
+    assert.ok(c.level > 1, `3 份报告 6000 经验该滚好几级, 现在还是 ${c.level}`);
+    assert.ok(c.level <= 20, `本突(breach=0)上限 20, 升到 ${c.level} 是越顶`);
+    assert.equal(s.items['1020004'], 2, '素材要真扣');
+    assert.ok(c.exp >= 0, '剩余经验要落账(不能吞掉)');
+    assert.ok(res.pushes.length === 1, '养成只推一条 Data_Push');
+  },
+});
+
+await checkHandler('B1 1001 UpgradeLeader: 素材不够 -> 拒单且一分不扣', 1001, {
+  save: trainSave((s) => { s.items['1020004'] = 1; }),
+  req: GProto.concat(GProto.vfield(1, LID), hash(1020004, 3)),
+  deny: /材料不足.*lack 1020004<3/,
+  after: (s) => {
+    const c = s.characters.find((x) => x.id === LID);
+    assert.equal(c.level, 1, '拒单后等级不许动');
+    assert.equal(s.items['1020004'], 1, 'payItemList 必须先全验再扣: 不足时一分不扣');
+  },
+});
+
+await checkHandler('B1 1005 UpgradeLeaderBreach: 扣本突材料 -> breach+1 (空 S2C + 推送)', 1005, {
+  save: trainSave((s, c) => { c.breach = 1; c.level = 40; }),
+  req: GProto.vfield(1, LID),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec) => assert.equal(dec.length, 0, 'UpgradeLeaderBreach_S2C 是空 message'),
+  after: (s) => {
+    const c = s.characters.find((x) => x.id === LID);
+    assert.equal(c.breach, 2, '突破要真落盘(客户端弹窗靠 leaderAttrChanged 里的 breachLevel)');
+    assert.ok(s.money['10'] < 999999, '突破的金币要真扣');
+  },
+});
+
+await checkHandler('B1 1005 UpgradeLeaderBreach: 没有下一突的行 -> 拒单', 1005, {
+  save: trainSave((s, c) => { c.breach = 6; }),
+  req: GProto.vfield(1, LID),
+  deny: /breachRow\?/,
+  after: (s) => assert.equal(s.characters.find((x) => x.id === LID).breach, 6, '拒单不许改突破'),
+});
+
+await checkHandler('B1 1003 UpgradeLeaderStarLevel: 扣"目标档" -> starLevel+1, leader 在字段 2', 1003, {
+  save: trainSave(),
+  req: GProto.vfield(1, LID),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { has }) => {
+    assert.ok(has(2), 'UpgradeLeaderStarLevel_S2C 的 leader 是 2 号字段');
+    assert.ok(!has(1), '1 号是 UpgradeLeaderActiveSkill 的写法, 串到这里 required 自检不响');
+  },
+  after: (s) => {
+    const c = s.characters.find((x) => x.id === LID);
+    assert.equal(c.starLevel, 1, '小阶要 +1');
+    assert.equal(c.star, 0, '大阶不动');
+    assert.equal(s.items['3001001'], 45, 'LeaderStarlevel[0][1].consumeID=2001001 要扣 5 个 3001001');
+  },
+});
+
+await checkHandler('B1 1003 UpgradeLeaderStarLevel: 本大阶小阶已满 -> 拒单不动档', 1003, {
+  save: trainSave((s, c) => { c.starLevel = 2; }),
+  req: GProto.vfield(1, LID),
+  deny: /starLevel 顶档/,
+  after: (s) => assert.equal(s.characters.find((x) => x.id === LID).starLevel, 2),
+});
+
+await checkHandler('B1 1002 UpgradeLeaderStar: 小阶已满时扣"当前档" -> star+1 且 starLevel 归 0', 1002, {
+  save: trainSave((s, c) => { c.starLevel = 2; }),
+  req: GProto.vfield(1, LID),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { has }) => {
+    assert.ok(has(2), 'UpgradeLeaderStar_S2C 的 leader 是 2 号字段');
+    assert.ok(!has(1));
+  },
+  after: (s) => {
+    const c = s.characters.find((x) => x.id === LID);
+    assert.equal(c.star, 1, '大阶 +1');
+    assert.equal(c.starLevel, 0, '"坐在大位阶上" —— 不清零等于白送一个小阶');
+    assert.equal(s.items['3001001'], 35, 'LeaderStar[star=0].consumeID=2001003 扣 15 个');
+  },
+});
+
+await checkHandler('B1 1002 UpgradeLeaderStar: 小阶没满就点大阶 -> 拒单', 1002, {
+  save: trainSave((s, c) => { c.starLevel = 1; }),
+  req: GProto.vfield(1, LID),
+  deny: /starNeedMaxLv/,
+  after: (s) => {
+    const c = s.characters.find((x) => x.id === LID);
+    assert.equal(c.star, 0);
+    assert.equal(c.starLevel, 1);
+  },
+});
+
+await checkHandler('B1 1008 UpgradeLeaderActiveSkill: leader 在字段 1 且回包带出新等级', 1008, {
+  save: trainSave((s, c) => { c.breach = 1; }),   // 本突 skillLevel 上限=4, 1 级可升
+  req: GProto.concat(GProto.vfield(1, LID), GProto.vfield(2, ACT)),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { has }) => {
+    assert.ok(has(1), 'UpgradeLeaderActiveSkill_S2C 的 leader 是 1 号字段');
+    assert.ok(!has(2), '2 号是 Talent/Star 的写法');
+    // 客户端 UpgradeLeaderActiveSkillHandler 无条件读 msg.leader.activeSkills -> 回包必须真带技能
+    const lvOf = dec.filter((f) => f.field === 1)
+      .flatMap((li) => GProto.decodeFields(li.value).filter((x) => x.field === 17))
+      .map((sk) => GProto.decodeFields(sk.value))
+      .find((k) => Number(k.find((x) => x.field === 1)?.value) === ACT);
+    assert.ok(lvOf, '回包 leader 的 activeSkills 里没有这条技能');
+    assert.equal(Number(lvOf.find((x) => x.field === 2)?.value), 2, 'activeSkills.level 要跟着涨');
+  },
+  after: (s) => {
+    const c = s.characters.find((x) => x.id === LID);
+    assert.equal(c.activeLv[String(ACT)], 2, '技能等级要落盘(重登靠它)');
+    assert.equal(s.items['1070001'], 50 - 24, 'SkillValue[1].consumeId=20011201 扣 24 个材料');
+  },
+});
+
+await checkHandler('B1 1008 UpgradeLeaderActiveSkill: 本突上限卡住(0 突 cap=1) -> 拒单', 1008, {
+  save: trainSave(),
+  req: GProto.concat(GProto.vfield(1, LID), GProto.vfield(2, ACT)),
+  deny: /breakCap/,
+  after: (s) => {
+    const c = s.characters.find((x) => x.id === LID);
+    assert.ok(!c.activeLv[String(ACT)], '被拒的技能不该留下等级');
+    assert.equal(s.items['1070001'], 50, '材料不能预扣');
+  },
+});
+
+// 1004 的拒单是 B1 里最要紧的一条: UpgradeLeaderTalentSkillHandler **无条件**弹 UIHeroLevelUp,
+// 回一个等级没变的包 = 客户端弹"升级成功"假窗(路 B :4036 同结论).
+await checkHandler('B1 1004 UpgradeLeaderTalentSkill: 普攻可升, leader 在字段 2', 1004, {
+  save: trainSave((s, c) => { c.breach = 4; }),
+  req: GProto.concat(GProto.vfield(1, LID), GProto.vfield(2, COMMON)),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { has }) => {
+    assert.ok(has(2), 'UpgradeLeaderTalentSkill_S2C 的 leader 是 2 号字段');
+    assert.ok(!has(1), '写成 1 号客户端拿到的是 undefined -> handler 当场崩');
+    const tal = dec.filter((f) => f.field === 2)
+      .flatMap((li) => GProto.decodeFields(li.value).filter((x) => x.field === 11))
+      .map((sk) => GProto.decodeFields(sk.value))
+      .find((k) => Number(k.find((x) => x.field === 1)?.value) === COMMON);
+    assert.ok(tal, 'talentSkills 里必须有普攻 1601010 —— 面板取不到这行就没有升级按钮');
+  },
+  after: (s) => assert.equal(s.characters.find((x) => x.id === LID).talentLv[String(COMMON)], 2),
+});
+
+await checkHandler('B1 1004 UpgradeLeaderTalentSkill: maxLevel=1 的被动 -> 必须拒单(否则弹假窗)', 1004, {
+  save: trainSave((s, c) => { c.breach = 4; }),
+  req: GProto.concat(GProto.vfield(1, LID), GProto.vfield(2, LOCKED_TALENT)),
+  deny: /maxLevel/,
+  after: (s) => assert.ok(!s.characters.find((x) => x.id === LID).talentLv[String(LOCKED_TALENT)]),
+});
+
+await checkHandler('B1 1016 UpgradeStickSkill: 上限取 TalentSkill 的 skillLevel, 回包带 stickSkillLevel=27', 1016, {
+  save: trainSave(),
+  req: GProto.concat(GProto.vfield(1, LID), GProto.vfield(2, STICK), GProto.vfield(3, WAND_ROW)),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { has }) => {
+    assert.ok(has(1), 'UpgradeStickSkill_S2C 的 leader 是 1 号字段');
+    assert.ok(!has(2));
+    const li = dec.find((f) => f.field === 1);
+    const lv27 = GProto.decodeFields(li.value).find((x) => x.field === 27);
+    assert.ok(lv27, 'stickSkillLevel=27 缺了 -> 重登式杖等级全丢(客户端只认这一项)');
+    const k = GProto.decodeFields(lv27.value);
+    assert.equal(Number(k.find((x) => x.field === 1)?.value), STICK, '27 号里的 id 是**技能id**, 不是表id');
+    assert.equal(Number(k.find((x) => x.field === 2)?.value), 2);
+    assert.equal(Number(k.find((x) => x.field === 3)?.value), 1, 'state=1 已解锁');
+  },
+  after: (s) => assert.equal(s.characters.find((x) => x.id === LID).stickLv[String(STICK)], 2),
+});
+
+await checkHandler('B1 1010 ChangeStickSkill: 三个 required 原样回显 + stickSkills=23 落盘', 1010, {
+  save: trainSave(),
+  req: GProto.concat(GProto.vfield(1, LID), GProto.vfield(2, 1), GProto.vfield(3, WAND_ROW)),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { has }) => {
+    assert.ok(has(1) && has(2) && has(3), 'ChangeStickSkill_S2C 三个字段全是 required');
+    assert.deepEqual(dec.map((f) => f.field), [1, 2, 3], '回显顺序外的字段都是多余的');
+  },
+  after: (s, { res }) => {
+    const c = s.characters.find((x) => x.id === LID);
+    assert.equal(c.stick['1'], WAND_ROW, '槽位->表id 的映射要落盘');
+    const li = leaderFromPush(GProto.decodeFields(res.pushes.find(([h]) => h === DPUSH)[1]));
+    const slot = li.find((f) => f.field === 23);
+    assert.ok(slot, 'stickSkills=23 缺了重登式杖装配全丢');
+    const k = GProto.decodeFields(slot.value);
+    assert.equal(Number(k.find((x) => x.field === 1)?.value), 1, 'key=技能槽Id');
+    assert.equal(Number(k.find((x) => x.field === 2)?.value), WAND_ROW, 'value=LeaderWandSkill 表id');
+  },
+});
+
+await checkHandler('B1 1011 ResetStickSkill: 只清槽位关系, 技能等级是玩家资产', 1011, {
+  save: trainSave((s, c) => { c.stick = { 1: WAND_ROW }; c.stickLv = { [String(STICK)]: 3 }; }),
+  req: GProto.vfield(1, LID),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { has }) => {
+    assert.ok(has(1), 'ResetStickSkill_S2C 只有 required skillLeaderId=1');
+    assert.ok(!has(2) && !has(3), '这条没有 2/3 号字段, 多发是串号');
+  },
+  after: (s) => {
+    const c = s.characters.find((x) => x.id === LID);
+    assert.deepEqual(c.stick, {}, '槽位要清空');
+    assert.equal(c.stickLv[String(STICK)], 3, 'stickLv **不能**跟着清 —— 升级过的等级不能被重置吞掉');
+  },
+});
+
+// 式杖技能集合的取数口径: 普攻/被动来自 Leader 表, 不是武器表 (武器的 weaponSkillId 在
+// Skill_Xls 里 maxLevel 恒为 1, 拿它当被动的结果就是"每个被动都满级、永远升不动").
+await check('B1 养成面板的被动集合取自 Leader 表而非武器表', async () => {
+  const t = await import('../dist/tbl.js');
+  const common = t.arr('Leader', LID, 'commonSkillId').map(Number);
+  const talent = t.arr('Leader', LID, 'talentSkill').map(Number);
+  const restore = useSave(trainSave((s, c) => { c.breach = 4; }));
+  try {
+    const { HANDLERS } = await import('../dist/payloads.js');
+    const res = HANDLERS[10002]({ msgId: 10002, packetUUid: 1, proto: Buffer.alloc(0), headerHex: '' });
+    const body = Buffer.isBuffer(res) ? res : res.body;
+    const li = GProto.decodeFields(body).filter((f) => f.field === 4)
+      .map((f) => GProto.decodeFields(f.value))
+      .find((x) => Number(x.find((k) => k.field === 1)?.value) === LID);
+    assert.ok(li, 'PlayerLoginGetInfo 里没有这个角色的 LeaderInfo');
+    const ids = li.filter((f) => f.field === 11)
+      .map((f) => Number(GProto.decodeFields(f.value).find((k) => k.field === 1)?.value));
+    for (const sid of [...common, ...talent]) assert.ok(ids.includes(sid), `talentSkills 少了 ${sid}`);
+    assert.ok(!ids.includes(5011010), '武器被动(5011010)不该出现在养成面板的技能列表里');
+  } finally { restore(); }
+});
+
+// 5. 工具链
 await check('tools/meta_decrypt.py 能重解 global-metadata.dat', async () => {
   const src = await ensureMetadata();
   if (!src) return results.push(['SKIP', 'APK 不在, 无法取 metadata']);

@@ -155,6 +155,14 @@ export function handleAppInterface(body: Buffer): { body: Buffer; note: string }
     const r = built as GsResponse;
     pushes = r.pushes; extra = r.extra ?? null; payload = r.body;
     mainInCompleted = !!r.mainInCompleted;
+    // 拒单: 回一个 header=0 的合法空包. 客户端 isReceiveFromServer 只看 udd.error, 与 header 无关,
+    // 于是 CurSend 照常清空(不会卡 20s 超时弹 210001), 而 header 0 在 EventManager 里没有监听者,
+    // 面板/弹窗一个都不动 —— 等价于路 B 的"只准不收包".
+    if (r.deny) {
+      const denyFrame = frameReply(Buffer.alloc(0), readPrefix());
+      log("warn", "gs", `deny msgId=${req.msgId}(${name}) reason=${r.deny} -> header=0 空包 ${denyFrame.length}B`);
+      return { body: denyFrame, note: `deny ${name} ${r.deny}` };
+    }
   }
   const prefix = readPrefix();
   let push: Buffer;

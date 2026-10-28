@@ -1,6 +1,6 @@
 # 斯露德假服 · 待补功能
 
-> 最后更新：2026-10-11 ｜ 协议现状 [`README-协议清单.md`](README-协议清单.md) ｜ 当前方案 [`README.md`](README.md)
+> 最后更新：2026-10-28 ｜ 协议现状 [`README-协议清单.md`](README-协议清单.md) ｜ 当前方案 [`README.md`](README.md)
 
 ---
 
@@ -15,12 +15,20 @@
   真服是靠通关发**导师经验**（`MainLevel_Xls.userExpReward`）按客户端 `PlayerGrow` 曲线升统御等级，
   **这条服务端逻辑没做** → 打完关等级不动、后续章节不会自然解锁。
 - 要补：`OverMainLevel`/`OverTrainLevel` 胜利时按关卡表发经验 → 用成长曲线升级 → 落 `save.json`
-  并推 `Data_Push`（`playerChangeExpandLvl`，字段1）。
+  并推 `Data_Push`（`playerChangeExpandLvl`，字段1）。**已排期：`gs-parity` 第一档 B3**（原语 `econ.addExp` /
+  `rollPlayerLv` 在地基里已备好）。
 
-### 1.2 武将升级（`1001 UpgradeLeader`）是简化版
+### 1.2 养成九条（`1001/1002/1003/1004/1005/1008/1010/1011/1016`）—— 已做（2026-10-28，分支 `gs-parity` · B1）
 
-- 现为**每次 +1 级（封顶 80）**，回空 `UpgradeLeader_S2C` + 推 `Data_Push.leaderAttrChanged`。
-- 未按 `PlayerGrow`/素材经验曲线、不扣素材。要还原真服需移植经验曲线 + `ItemInfo` 扣费。
+- 1001 不再是"每次 +1 级封顶 80"的简化版：读 C2S `itemInfo=3` 的素材，按 `Items_Xls.useParam` 折成经验，
+  `econ.ts` 的 `upgradeByExp` 沿 `LeaderLv`/`PlayerGrow` 曲线连升，**真扣材料**并推 `Data_Push`
+  （`leaderAttrChanged=5` + `changePart=10`）。
+- 突破/大阶/小阶/主动/被动/式杖全部按表收费与卡上限；口径与判据见
+  [协议清单](README-协议清单.md) §4 的 B1 行与 §4.1（**拒单 = 合法帧 + `header=0` 不派发**）。
+- 已知缺口（不影响 B1 收尾）：升级/通关类任务进度**还没跟着涨**（等 B5 `src/tasks.ts` 的 `bumpTask`）；
+  式杖升级**不扣材料**（贴路 B，客户端自己按 `consumeId ~= 0` 拦）；突破的 `commonConditionId` 未校验；
+  `LeaderInfo.seasonTalentId=24` / `baseCalcPropModelInfo=26` 仍未发。
+- **真机一轮还没跑**（自检修的是"包对不对"，测不到"面板跳不跳"）。
 
 ### 1.3 角色属性覆盖（已有）
 
@@ -140,6 +148,8 @@
 
 ## 7. 建议顺序
 
+0. **对齐路 B 假 GS**（分支 `gs-parity`，地基已合）—— 第一档余 **B2 武装 → B3 通关发经验 → B4 挂机 →
+   B5 任务 → B6 签到**；每档 `build/selftest` 全绿 + 一轮真机才开下一档。B3 会顺手解掉 §1.1。
 1. **通关加经验 / 统御等级成长**（§1.1）—— 让关卡/章节自然解锁，别再靠手改 `player.level`
 2. 肉鸽 `9300009` / 元素塔 `9400004` / 乌拉拉 `20001`（补骨架数据）
 3. 抽卡做真（概率/保底/UP/消耗）
