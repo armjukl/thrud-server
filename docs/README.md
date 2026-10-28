@@ -21,7 +21,7 @@
 | 只靠 hook 的本地化 | 🚧 复刻 PC 纪念版的脚本集已落地（`frida-gadget/`，离线 33 项构建自检 + 39 条真字节断言全绿），**真机一轮还没跑**（[`../../frida-gadget/README.md`](../../frida-gadget/README.md)） |
 | 资源完整性 | ✅ 1583 台账 44,841 条 **逐条 md5 对得上**（改过的 Lua chunk 连带台账那一条 md5 一起换，见 §3 第 1 条） |
 | 养成（升级/突破/星级/技能/式杖） | 🚧 分支 `gs-parity` · B1 已落 9 条：`1001`（原来是"每次 +1 级"的简化版）+ 新接 `1002 1003 1004 1005 1008 1010 1011 1016`，真扣材料 / 真走曲线 / 满级与材料不足**拒单不推 push**（见 [协议清单](README-协议清单.md) §4.1）；真机一轮待跑 |
-| 假服地基（对齐路 B） | 🚧 分支 `gs-parity`：36 张整表进 `src/data/tbl/` + `tbl.ts` 取数面、`econ.ts`/`skills.ts` 扣费发奖与升级曲线、`save.ts` 原子写 + `.bak` 回退 + 结构迁移，自检 45/45；`HANDLERS` 49 条；第一档余 **B2 武装 / B3 通关 / B4 挂机 / B5 任务 / B6 签到**（见 [待补功能](README-待补功能.md)） |
+| 假服地基（对齐路 B） | 🚧 分支 `gs-parity`：36 张整表进 `src/data/tbl/` + `tbl.ts` 取数面、`econ.ts`/`skills.ts` 扣费发奖与升级曲线、`save.ts` 原子写 + `.bak` 回退 + 结构迁移，自检 46/46；`HANDLERS` 49 条；第一档余 **B2 武装 / B3 通关 / B4 挂机 / B5 任务 / B6 签到**（见 [待补功能](README-待补功能.md)） |
 
 剩余问题全部是**服务端协议未实现**，不是资源/客户端问题。扣费/经验/曲线这类原语此前在 `src/`
 里一个都没有（旧 41 条 handler 无一条减过库存），现在地基到位、养成已按表扣费，缺的只是把余下命令逐条接上去。
@@ -314,7 +314,7 @@ fuser -k -n tcp 9443 19005
 ```bash
 npm ci                   # 安装 TS 依赖（离线可从 fakeserverts/node_modules 拷一份）
 npm run build            # tsc -> dist/
-npm run selftest         # 45 条：KCP/帧/网关/HTTP 桩/战斗/抽卡/整表/存档/经济/技能/proto required/B1 养成/工具链
+npm run selftest         # 46 条：KCP/帧/网关/HTTP 桩/战斗/抽卡/整表/存档/经济/技能/proto required/B1 养成/工具链
 ```
 
 前提：`res/` 已就位（`res/phone/`、`res/apk/`）。
@@ -336,9 +336,12 @@ python3 tools/gen_tables.py --check             # 只比对行数/provenance, �
 `src/proto.ts` 是手写 wire format，只认字段号、不认 `required`：少发一个必填字段，编译过、
 端到端也过，只有客户端解析那一刻才崩或"面板里面空"。`test/proto_schema.mjs` 把 `proto/*.proto`
 的 required 集读出来当断言输入，`test/selftest.mjs` 的 `checkHandler()` 是每条 handler 的公共外壳
-（查回体 required + 手写"1 还是 2"的串号断言 + `after()` 验真落盘）。两条已实测的判据：
+（查回体 required + 手写"1 还是 2"的串号断言 + `after()` 验真落盘）。三条已实测的判据：
 把 `LeaderInfo` 的 `weaponId=9` 从构造器里删掉 → `checkHandler` 与"已注册 handler 全覆盖"这条一起变红；
-把 `assertRequired` 改成直接放过 → 解析器自检的负控立刻变红。新接一条命令的最低门槛是
+把 `assertRequired` 改成直接放过 → 解析器自检的负控立刻变红；
+把 `gs.ts` 的 `deny` 分支短路掉 → "GS 帧：养成 deny 回全零合法帧"红在
+`deny 不该带 ReturnPackagePush`（`checkHandler` 直调 `HANDLERS`，帧级行为只有这条端到端覆盖）。
+新接一条命令的最低门槛是
 `checkHandler(...)` 里带上 `fields`（字段号手写断言）和 `after`（落盘断言）。
 
 ---
