@@ -747,7 +747,9 @@ await check('proto: 已注册 handler 的回包 required 全覆盖 (空请求兜
   assert.equal(checked + denied, Object.keys(HANDLERS).length - Object.keys(ACK_ONLY).length,
     '有条 handler 既没回合规包也没拒单(从这条检查里漏出去了)');
   assert.ok(checked >= 38, `应有 38 条以上带消息体的 handler, 现在只有 ${checked}`);
-  assert.ok(denied >= 9, `养成 9 条(1001/1002/1003/1004/1005/1008/1010/1011/1016)空请求都该拒单, 实际拒了 ${denied} 条`);
+  assert.ok(denied >= 16,
+    `养成 9 条(1001/1002/1003/1004/1005/1008/1010/1011/1016) + 武装 7 条(1201/1202/1204/1205/1207/1208/1209)`
+    + ` 空请求都该拒单, 实际拒了 ${denied} 条`);
   assert.ok(withReq >= 12, `带 required 的回包只有 ${withReq} 条被真查过, 覆盖面退化`);
 });
 
@@ -768,7 +770,8 @@ await check('proto: 注册表完整 (基线 handler 不掉 / 第一档进度对�
   assert.equal(new Set(TIER1_NEW).size, 28, '清单里有重复号');
   for (const id of TIER1_NEW) assert.ok(ps.cmdOf(id), `${id} 不是 CmdDefine 里的合法号`);
   // TIER1_DONE 每批做完往里加; "未注册数" 必须等于"声明还没做的数量" —— 偷偷接了不登记就红灯
-  const TIER1_DONE = [1002, 1003, 1004, 1005, 1008, 1010, 1011, 1016];   // B1 养成(1001 重构不在此列)
+  const TIER1_DONE = [1002, 1003, 1004, 1005, 1008, 1010, 1011, 1016,   // B1 养成(1001 重构不在此列)
+    1201, 1202, 1204, 1205, 1207, 1208, 1209];                          // B2 武装
   const stillMissing = TIER1_NEW.filter((id) => !registered.has(id)).sort((a, b) => a - b);
   const declared = TIER1_NEW.filter((id) => !TIER1_DONE.includes(id)).sort((a, b) => a - b);
   assert.deepEqual(stillMissing, declared,
@@ -1126,6 +1129,473 @@ await check('GS 帧: 养成 deny 回全零合法帧, 与"未注册兜底""成功
     if (ffBackup) fs.writeFileSync(ff, ffBackup);
     else if (fs.existsSync(ff)) fs.unlinkSync(ff);
   }
+});
+
+// ---------------------------------------------------------------- 4j. B2 武装 (7 条)
+// 这七条的风险不在"回不回得出去", 而在回体里那两组随机数: 洗练确认页用**同一个下标**读 WeaponInfo
+// 的 17(生效) 与 18(待确认) 的四列数组, 短一格就 index 到 nil; 而 18 的"形状"本身又是客户端
+// IsRecastingOver 的判据(洗属性不许带技能、洗技能必须照抄 17 的属性列且 scope 发 0).
+// 所以每条既断言 required/字段号, 也断言 17/18 的条数与取值合法性.
+const WEAP = await import('../dist/weapons.js');
+const SAVEM = await import('../dist/save.js');
+const TBL = await import('../dist/tbl.js');
+const WCFG = 5041010;                 // 4★: 1 技能位 + 2 属性位, 精炼上限 4, 有突破行
+const WLOW = 5021010;                 // 2★: 0 技能位 -> 洗练必须被拒(且精炼上限 0)
+const WID = '7TEST0001';              // 穿在 LID 身上的测试武装
+const WMAT1 = '7TEST0002';            // 同配置闲置卡: 精炼素材 / 分解对象
+const WMAT2 = '7TEST0003';
+const WBR0 = 20;                      // weaponMaxLv(5041010, breach=0)
+const wInst = (onlyId, cfg, over = {}) => ({
+  onlyId, cfg, leaderId: 0, level: 1, breach: 0, exp: 0, refine: 0, lock: 0, skin: 0,
+  recastingTime: 0, recastingSkillTime: 0, ...over,
+});
+// 底档: 换掉整个 weapons(避免和真档里那 27 把 "7g…" 号混), 并把突破/洗练材料备齐.
+// 1030011/12=突破料 1090101=改组零件(洗练) 1090102=定向固锁零件(锁定) 1090001=式仗经验料(强化)
+const armSave = (mut) => {
+  const s = JSON.parse(fs.readFileSync(SAVE_FILE, 'utf8'));
+  s.weapons = [
+    wInst(WID, WCFG, { leaderId: LID, level: WBR0 }),
+    wInst(WMAT1, WCFG),
+    wInst(WMAT2, WCFG),
+    wInst('7TEST0004', WLOW),
+  ];
+  s.items = { ...s.items, 1030011: 60, 1030012: 60, 1090101: 100, 1090102: 100, 1090001: 50 };
+  s.money = { ...s.money, 10: 999999 };
+  if (mut) mut(s);
+  return s;
+};
+const wOf = (dec, no) => dec.find((f) => f.field === no) ?? null;
+// UpgrageWeapon.itemInfo=1 才是素材列表(顶层那个 hash() 把外层号写成了 3 —— 那是 UpgradeLeader 的字段号).
+const whash = (k, v) => GProto.bfield(1, GProto.concat(GProto.vfield(1, k), GProto.vfield(2, v)));
+const wSub = (f) => (f ? GProto.decodeFields(f.value) : null);
+const randShape = (infoDec, no) => {
+  const f = wOf(infoDec, no);
+  if (!f) return null;
+  const r = { skill: [], key: [], val: [], pool: [], attr: [], scope: null, hasProp: false };
+  for (const g of GProto.decodeFields(f.value)) {
+    if (g.field === 1) r.skill.push(Number(g.value));
+    else if (g.field === 2) {
+      r.hasProp = true;
+      for (const h of GProto.decodeFields(g.value)) {
+        if (h.field === 1) r.key.push(Number(h.value));
+        else if (h.field === 2) r.val.push(h.value.readDoubleLE(0));
+        else if (h.field === 4) r.scope = h.value.readDoubleLE(0);
+        else if (h.field === 5) r.pool.push(Number(h.value));
+        else if (h.field === 6) r.attr.push(Number(h.value));
+      }
+    }
+  }
+  return r;
+};
+// 一把武器的合法域: 池来自 WeaponLibrary, 技能取 WeaponRandom.skillID, 属性取 EquipAttribute 的列.
+const libRows = (lib) => TBL.arr('WeaponLibrary', lib, 'weaponRandomID').map(Number);
+const legalRand = (cfg) => {
+  const prop = libRows(TBL.num('Weapon', cfg, 'randomstrength', 0))
+    .map((id) => TBL.row('WeaponRandom', id)).filter((x) => x && Number(x.valueType) === 2);
+  const skill = libRows(TBL.num('Weapon', cfg, 'randomskill', 0))
+    .map((id) => TBL.row('WeaponRandom', id)).filter((x) => x && Number(x.valueType) === 1);
+  return { prop, skill };
+};
+function assertRandLegal(label, r, cfg) {
+  assert.ok(r, `${label}: 整组缺失`);
+  assert.ok(r.key.length === r.val.length && r.key.length === r.pool.length && r.key.length === r.attr.length,
+    `${label}: 四列不等长 key=${r.key.length} val=${r.val.length} pool=${r.pool.length} attr=${r.attr.length}`);
+  const slots = WEAP.randSlotCount(cfg);
+  assert.ok(r.skill.length <= slots.skill && r.key.length <= slots.prop,
+    `${label}: 超出 ${slots.skill}技能/${slots.prop}属性 的格子数`);
+  const { prop, skill } = legalRand(cfg);
+  for (const id of r.skill) {
+    assert.ok(skill.some((x) => Number(x.skillID) === id), `${label}: 技能 ${id} 不在 ${cfg} 的技能池里`);
+  }
+  for (let i = 0; i < r.key.length; i++) {
+    const wr = prop.find((x) => Number(x.id) === r.pool[i]);
+    assert.ok(wr, `${label}: 池 ${r.pool[i]} 不是 ${cfg} 的属性池行`);
+    const sid = Number(wr.skillID);
+    const types = TBL.arr('EquipAttribute', sid, 'attributeType').map(Number);
+    const ranges = TBL.arr('EquipAttribute', sid, 'attributeRange');
+    assert.ok(r.attr[i] >= 0 && r.attr[i] < types.length, `${label}: attrIdx ${r.attr[i]} 越界(该池只有 ${types.length} 列)`);
+    assert.equal(r.key[i], types[r.attr[i]], `${label}: key ${r.key[i]} != attributeType[${r.attr[i] + 1}]`);
+    const rg = ranges[r.attr[i]];
+    assert.ok(Array.isArray(rg), `${label}: 属性 ${r.key[i]} 没有 attributeRange`);
+    assert.ok(r.val[i] >= Number(rg[0]) && r.val[i] <= Number(rg[1]),
+      `${label}: 值 ${r.val[i]} 不在 [${rg[0]}, ${rg[1]}] 内`);
+  }
+}
+/**
+ * 洗练回体的形状断言 (1208 用). kind=1 洗属性 / kind=2 洗技能, 与客户端 IsRecastingOver 反推的
+ * 两种形状一致: 属性待确认 <=> 18.secondaryPropInfo.weaponPropScope ~= 0 (且 18 不带技能);
+ * 技能待确认 <=> 18.weaponRandomSkill 存在 (且属性列照抄 17, scope 必须发 0).
+ */
+function assertRecastShape(label, infoDec, cfg, kind) {
+  const cur = randShape(infoDec, 17);
+  const pend = randShape(infoDec, 18);
+  assertRandLegal(`${label}/17`, cur, cfg);
+  assert.ok(pend, `${label}: 18 整个缺失 -> 客户端判"无待确认", 成功窗里没东西可留`);
+  assertRandLegal(`${label}/18`, pend, cfg);
+  if (kind === 1) {
+    assert.equal(pend.skill.length, 0, `${label}: 洗属性的 18 带了技能 -> 技能页也被判成待确认`);
+    assert.ok(pend.scope !== 0, `${label}: PROP 待确认的标志就是 scope~=0, 现在发了 ${pend.scope}`);
+    assert.equal(pend.key.length, cur.key.length, `${label}: 18 属性 ${pend.key.length} 条 != 17 的 ${cur.key.length} 条`);
+  } else {
+    assert.ok(pend.skill.length > 0, `${label}: 洗技能的 18 必须带新技能`);
+    assert.equal(pend.key.length, cur.key.length, `${label}: 洗技能时 18 要照抄 17 的属性列(确认页同下标读)`);
+    assert.deepEqual(pend.key, cur.key, `${label}: 18 的属性列与 17 不同`);
+    assert.equal(pend.scope, 0, `${label}: 技能待确认时 scope 必须显式发 0, 否则属性页也被判成待确认`);
+  }
+  return { cur, pend };
+}
+
+await checkHandler('B2 1201 UpgrageWeaponBreach: 满级才突破, breach+1 且带 weaponInfo=1', 1201, {
+  save: armSave(),
+  req: GProto.sfield(2, WID),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { has, pb }) => {
+    assert.ok(has(1), 'weaponInfo 在字段 1 (1205/1207 才在 2)');
+    const wi = pb.decodeFields(wOf(dec, 1).value);
+    assert.equal(Number(wOf(wi, 5).value), 1, 'breachLevel=5 要已经是 +1 之后的值');
+    assert.ok(wOf(wi, 17), '武装面板靠 17/18 画随机行, 突破回包也得带着');
+    assert.ok(has(2), 'rewards=2 消耗回显');
+    assert.ok(has(3), '已装备 -> leaderInfo=3 必须带上, 角色面板才刷得出新属性');
+  },
+  after: (s) => {
+    const w = s.weapons.find((x) => x.onlyId === WID);
+    assert.equal(w.breach, 1, '突破要真落盘');
+    assert.equal(s.items['1030011'], 40, '本突扣 20 个 1030011');
+    assert.ok(s.money['10'] < 999999, '金币要扣(27000)');
+  },
+});
+
+await checkHandler('B2 1201 UpgrageWeaponBreach: 没满本突等级上限 -> 拒单(客户端无条件弹突破成功窗)', 1201, {
+  save: armSave((s) => { s.weapons[0].level = 5; }),
+  req: GProto.sfield(2, WID),
+  deny: /1201 未满级/,
+  after: (s) => {
+    assert.equal(s.weapons.find((x) => x.onlyId === WID).breach, 0, '拒单后突破等级不许动');
+    assert.equal(s.items['1030011'], 60, '拒单后材料不许扣');
+  },
+});
+
+await checkHandler('B2 1202 UpgrageWeapon: 1090001 折 200 经验/份, 按 WeaponGrow 曲线滚级', 1202, {
+  save: armSave((s) => { s.weapons[0].level = 1; }),
+  req: GProto.concat(GProto.sfield(3, WID), whash(1090001, 3)),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { has, pb }) => {
+    assert.ok(has(1) && has(2), 'weaponInfo=1 + rewards=2');
+    const wi = pb.decodeFields(wOf(dec, 1).value);
+    assert.equal(Number(wOf(wi, 4).value), 2, '600 经验 / 每级 400 -> 只该滚到 2 级');
+    assert.equal(Number(wOf(wi, 3).value), 200, '余下的 200 经验要留在 exp=3 里');
+    assert.ok(has(3), '已装备 -> leaderInfo=3');
+  },
+  after: (s) => {
+    const w = s.weapons.find((x) => x.onlyId === WID);
+    assert.equal(w.level, 2, '强化要真落盘');
+    assert.equal(s.items['1090001'], 47, '三份经验料要真扣');
+  },
+});
+
+await checkHandler('B2 1202 UpgrageWeapon: 材料不够 -> 拒单且一分不扣', 1202, {
+  save: armSave((s) => { s.weapons[0].level = 1; s.items['1090001'] = 1; }),
+  req: GProto.concat(GProto.sfield(3, WID), whash(1090001, 3)),
+  deny: /1202 材料不足.*lack 1090001<3/,
+  after: (s) => {
+    assert.equal(s.items['1090001'], 1, '不足时一分不扣');
+    assert.equal(s.weapons.find((x) => x.onlyId === WID).level, 1, '等级不许动');
+  },
+});
+
+await checkHandler('B2 1204 DecomposeWeapon: 只列真删掉的 onlyId + ShowItem_Push 发返还', 1204, {
+  save: armSave(),
+  req: GProto.concat(GProto.sfield(1, WMAT1), GProto.sfield(1, WID)), // WID 已装备 -> 不该被删
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { has, pb }) => {
+    const ids = dec.filter((f) => f.field === 1).map((f) => f.value.toString());
+    assert.deepEqual(ids, [WMAT1], '已装备的那把不许出现在删除列表里');
+    assert.ok(has(2), 'rewards=2 返还集合');
+    const wi = pb.decodeFields(wOf(dec, 1) ? wOf(dec, 2).value : Buffer.alloc(0));
+    assert.ok(wi.some((f) => f.field === 1), 'Rewards 里至少要有固定组 9004 的 1090101');
+  },
+  after: (s, { res }) => {
+    assert.equal(s.weapons.filter((x) => x.onlyId === WMAT1).length, 0, '实例要真删(旧实现是每次现编列表, 写完就丢)');
+    assert.ok(s.weapons.some((x) => x.onlyId === WID), '穿戴中的那把要留着');
+    assert.ok(s.items['1090101'] >= 160, '固定组 9004 = 60 个改组零件(100-40+60)');
+    const show = (res.extra ?? []).find(([h]) => h === 900009);
+    assert.ok(show, '1204 的 handler 不看 rewards, 返还必须另走 ShowItem_Push(900009)');
+    assert.ok((res.pushes ?? []).some(([h]) => h === DPUSH), '扣/发的数量靠 Data_Push 刷');
+  },
+});
+
+await checkHandler('B2 1204 DecomposeWeapon: 全是上锁/已装备 -> 拒单且一把不删', 1204, {
+  save: armSave((s) => { s.weapons[1].lock = 1; }),
+  req: GProto.concat(GProto.sfield(1, WMAT1), GProto.sfield(1, WID)),
+  deny: /1204 没有可分解/,
+  after: (s) => {
+    assert.equal(s.weapons.length, 4, '拒单不许删任何实例');
+    assert.equal(s.items['1090101'], 100, '拒单不许发返还');
+  },
+});
+
+await checkHandler('B2 1205 ChangeWeaponLock: 上锁状态落盘, weaponInfo 在字段 2 (不是 1)', 1205, {
+  save: armSave(),
+  req: GProto.concat(GProto.sfield(1, WMAT1), GProto.vfield(2, 1)),
+  fields: (dec, { has }) => {
+    assert.ok(has(2), 'ChangeWeaponLock_S2C 的 weaponInfo 是 2');
+    assert.ok(!has(1), '字段 1 是 DecomposeWeapon 的写法, 这里发了等于没发(客户端 UpdateData(nil))');
+  },
+  after: (s) => {
+    assert.equal(s.weapons.find((x) => x.onlyId === WMAT1).lock, 1, '锁状态要真落盘, 否则重启就解锁了');
+  },
+});
+
+await checkHandler('B2 1207 UpgradeWeaponRefineLevel: 吞同名卡换精炼等级, 卡真删', 1207, {
+  save: armSave(),
+  req: GProto.concat(GProto.sfield(1, WID), GProto.sfield(2, WMAT1), GProto.sfield(2, WMAT2)),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { has, pb }) => {
+    assert.ok(has(2) && !has(1), 'UpgradeWeaponRefineLevel_S2C 的 weaponInfo 也是 2');
+    const wi = pb.decodeFields(wOf(dec, 2).value);
+    assert.equal(Number(wOf(wi, 12).value), 2, '两张 0 炼卡 = +2 (每张按 它的精炼等级+1 计)');
+    assert.deepEqual(dec.filter((f) => f.field === 3).map((f) => f.value.toString()), [WMAT1, WMAT2],
+      'consumeWeaponIds=3 少一条, 客户端仓库就留着已经吞掉的卡');
+  },
+  after: (s) => {
+    const w = s.weapons.find((x) => x.onlyId === WID);
+    assert.equal(w.refine, 2, '精炼等级要真落盘');
+    // 只数测试实例: 物化会顺手给每个角色补一把默认式仗, 拿总长断言等于在测角色数.
+    assert.equal(s.weapons.filter((x) => x.onlyId.startsWith('7TEST')).length, 2,
+      '两张素材卡要真删, 剩下的应是 WID + 2★ 那把');
+    assert.ok(!s.weapons.some((x) => x.onlyId === WMAT1 || x.onlyId === WMAT2), '素材卡要从存档里消失');
+  },
+});
+
+await checkHandler('B2 1207 UpgradeWeaponRefineLevel: 超上限 / 素材已装备 -> 拒单不吞卡', 1207, {
+  save: armSave((s) => { s.weapons[0].refine = 3; s.weapons[1].leaderId = 2002001; }),
+  req: GProto.concat(GProto.sfield(1, WID), GProto.sfield(2, WMAT1)),
+  deny: /1207 (超上限|素材不合法)/,
+  after: (s) => {
+    assert.equal(s.weapons.find((x) => x.onlyId === WID).refine, 3, '拒单后精炼等级不许动');
+    assert.equal(s.weapons.filter((x) => x.onlyId.startsWith('7TEST')).length, 4, '拒单不许吞卡');
+  },
+});
+
+await checkHandler('B2 1208 RecastingWeapon(PROP): 新属性进 18, 17 保持生效值', 1208, {
+  save: armSave(),
+  req: GProto.concat(GProto.sfield(1, WID), GProto.vfield(4, 1)),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { has, pb }) => {
+    assert.ok(has(1) && has(2), 'required weaponInfo=1 + recastingType=2');
+    assert.equal(Number(wOf(dec, 2).value), 1, 'recastingType 原样回显');
+    assertRecastShape('1208/PROP', pb.decodeFields(wOf(dec, 1).value), WCFG, 1);
+  },
+  after: (s) => {
+    const w = s.weapons.find((x) => x.onlyId === WID);
+    assert.equal(w.rand.key.length, 2, '4★ 生效组是 2 条属性');
+    assert.equal(w.rand.skill.length, 1, '4★ 生效组是 1 条技能');
+    assert.equal(w.last.skill.length, 0, '落盘的 last 只存重摇的那一半(属性), 别存两份真相');
+    assert.equal(w.recastingTime, 1, '1208 要 +1 次**属性**洗练计数(它是终身计数, 不是时间戳)');
+    assert.equal(w.recastingSkillTime, 0, '技能侧计数不许跟着涨');
+    assert.equal(s.items['1090101'], 90, '扣 10 个改组零件');
+    assert.equal(s.money['10'], 999999 - 7500, '扣 7500 金币');
+  },
+});
+
+await checkHandler('B2 1208 RecastingWeapon(SKILL): 18 带新技能 + 照抄 17 的属性列(scope 显式 0)', 1208, {
+  save: armSave(),
+  req: GProto.concat(GProto.sfield(1, WID), GProto.vfield(4, 2)),
+  fields: (dec, { pb }) => {
+    const { cur, pend } = assertRecastShape('1208/SKILL', pb.decodeFields(wOf(dec, 1).value), WCFG, 2);
+    assert.equal(pend.skill.length, cur.skill.length, '技能条数要与 17 对齐, 否则确认页 SkillItem 取到 nil');
+  },
+  after: (s) => {
+    const w = s.weapons.find((x) => x.onlyId === WID);
+    assert.equal(w.recastingSkillTime, 1, '技能侧计数 +1');
+    assert.equal(w.recastingTime, 0, '属性侧计数不动');
+    assert.equal(w.last.key.length, 0, 'last 只存技能那半');
+  },
+});
+
+// 洗属性时锁 1 条: 锁定项必须原样出现在 18 里 (客户端送的是 0 基下标).
+await checkHandler('B2 1208 RecastingWeapon(PROP) 锁定 1 条: 锁的那条原样保留, 另加 5 个固锁零件', 1208, {
+  save: armSave(),
+  req: GProto.concat(GProto.sfield(1, WID), GProto.vfield(2, 1), GProto.vfield(4, 1)),
+  after: (s, { res }) => {
+    const body = Buffer.isBuffer(res) ? res : res.body;
+    const wi = GProto.decodeFields(GProto.decodeFields(body).find((f) => f.field === 1).value);
+    const cur = randShape(wi, 17), pend = randShape(wi, 18);
+    assert.ok(cur.key.includes(pend.key[1]) && cur.attr.includes(pend.attr[1]),
+      `锁定的第 2 条没被原样带过去: 17=${JSON.stringify(cur.key)} 18=${JSON.stringify(pend.key)}`);
+    assert.equal(pend.key[1], cur.key[1], '0 基下标 1 锁的应当正好是 17 的第 2 条');
+    const w = s.weapons.find((x) => x.onlyId === WID);
+    assert.equal(s.items['1090102'], 95, 'WeaponRefiningLock[1].consume2 = 5 个定向固锁零件');
+    assert.equal(w.rand.key[1], cur.key[1], '17 在确认之前不许变');
+  },
+});
+
+await checkHandler('B2 1208 RecastingWeapon: 2★ 没有技能位 -> 拒单(确认页会读对侧 #weaponRandomSkill)', 1208, {
+  save: armSave(),
+  req: GProto.concat(GProto.sfield(1, '7TEST0004'), GProto.vfield(4, 1)),
+  deny: /1208 4|1208 2★ 不可洗练/,
+  after: (s) => {
+    const w = s.weapons.find((x) => x.onlyId === '7TEST0004');
+    assert.equal(w.recastingTime, 0, '2★ 洗练被拒, 计数不许涨');
+    assert.equal(s.items['1090101'], 100, '拒单不许扣洗练料');
+  },
+});
+
+await checkHandler('B2 1208 RecastingWeapon: 零件不够 -> 拒单且不产生待确认', 1208, {
+  save: armSave((s) => { s.items['1090101'] = 3; }),
+  req: GProto.concat(GProto.sfield(1, WID), GProto.vfield(4, 1)),
+  deny: /1208 消耗不足/,
+  after: (s) => {
+    const w = s.weapons.find((x) => x.onlyId === WID);
+    assert.equal(w.last.key.length, 0, '扣不到钱就不许留下半个洗练结果');
+    assert.equal(s.items['1090101'], 3, '一条都不扣');
+  },
+});
+
+// 1209 需要先有"待确认": 用与 1208 同一套种子造一份(last 只存属性那半).
+const armPending = (s) => {
+  const w = s.weapons.find((x) => x.onlyId === WID);
+  const base = WEAP.rollWeapon(WCFG, WEAP.seedOf(WID), SAVEM.emptyRand());
+  w.rand = base;
+  w.last = WEAP.pendingHalf(WEAP.rollWeapon(WCFG, WEAP.seedOf(WID, 1), base, WEAP.keepFor(base, 1)), 1);
+  w.recastingTime = 1;
+};
+
+await checkHandler('B2 1209 SelectWeaponRandomInfo(NEW): 18 并进 17 后清空, 回体不再带 18', 1209, {
+  save: armSave(armPending),
+  req: GProto.concat(GProto.sfield(1, WID), GProto.vfield(2, 1), GProto.vfield(3, 2)),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { has, pb }) => {
+    assert.ok(has(1) && has(2) && has(3), '三个 required 都得回显');
+    const wi = pb.decodeFields(wOf(dec, 1).value);
+    const cur = randShape(wi, 17);
+    assertRandLegal('1209/17', cur, WCFG);
+    assert.equal(wOf(wi, 18), null, '确认过之后 18 必须整个消失(留着客户端就一直挂在"未保存"状态)');
+    assert.equal(Number(wOf(dec, 3).value), 2, 'selectType 原样回显');
+  },
+  after: (s, { dec, pb }) => {
+    const w = s.weapons.find((x) => x.onlyId === WID);
+    const cur = randShape(pb.decodeFields(wOf(dec, 1).value), 17);
+    assert.deepEqual(w.rand.key, cur.key, '落盘的 rand 就是刚确认下来的一组');
+    assert.equal(w.last.key.length, 0, 'last 要清空');
+    assert.equal(w.rand.skill.length, 1, '技能那一半没被属性洗练动过');
+  },
+});
+
+await checkHandler('B2 1209 SelectWeaponRandomInfo(OLD): 只清 18, 17 保持原值', 1209, {
+  save: armSave(armPending),
+  req: GProto.concat(GProto.sfield(1, WID), GProto.vfield(2, 1), GProto.vfield(3, 1)),
+  fields: (dec, { pb }) => {
+    const base = WEAP.rollWeapon(WCFG, WEAP.seedOf(WID), SAVEM.emptyRand());
+    const wi = pb.decodeFields(wOf(dec, 1).value);
+    const cur = randShape(wi, 17);
+    assert.deepEqual(cur.key, base.key, '保留旧的 -> 17 必须还是进洗练前那一组');
+    assert.equal(wOf(wi, 18), null, '18 要消失');
+  },
+  after: (s) => {
+    assert.equal(s.weapons.find((x) => x.onlyId === WID).last.key.length, 0, 'OLD 也要把待确认清掉');
+  },
+});
+
+await checkHandler('B2 1209 SelectWeaponRandomInfo: 没有待确认 / 类型不符 -> 拒单', 1209, {
+  save: armSave(armPending),
+  req: GProto.concat(GProto.sfield(1, WID), GProto.vfield(2, 2), GProto.vfield(3, 2)), // 请求技能, 待确认是属性
+  deny: /1209 类型不符/,
+  after: (s) => {
+    const w = s.weapons.find((x) => x.onlyId === WID);
+    assert.equal(w.last.key.length, 2, '拒单后待确认还得原样留着, 玩家可以重开确认页再选');
+  },
+});
+
+// 登录列表是所有武装用例的"总检": 每把都要有 17、19/20 是计数、默认式仗的 defleaderId 才藏得住.
+await check('B2 登录/仓库列表: 17 齐、19/20 不是时间戳、默认式仗 defleaderId=穿戴者', async () => {
+  const restore = useSave(armSave());
+  try {
+    const { HANDLERS } = await import('../dist/payloads.js');
+    const res = HANDLERS[10007]({ msgId: 10007, packetUUid: 1, proto: GProto.vfield(1, 0), headerHex: '' });
+    const body = Buffer.isBuffer(res) ? res : res.body;
+    const list = GProto.decodeFields(body).filter((f) => f.field === 1);
+    assert.ok(list.length >= 4, `列表应有测试的 4 把 + 各角色默认式仗, 现在 ${list.length}`);
+    for (const f of list) {
+      const wi = GProto.decodeFields(f.value);
+      const only = wOf(wi, 6).value.toString();
+      const cfg = Number(wOf(wi, 1).value);
+      assert.ok(wOf(wi, 17), `${only}: 已装备/在仓库里的武装必须带 17(面板与确认页都读它)`);
+      assertRandLegal(`列表 ${only}`, randShape(wi, 17), cfg);
+      assert.equal(wOf(wi, 18), null, `${only}: 没洗过就不该有 18`);
+      const t19 = Number(wOf(wi, 19).value);
+      assert.ok(t19 < 1e6, `${only}: recastingTime 是终身计数, 现在发成了时间戳 ${t19}`);
+      // defleaderId 认号不认人: 只有"派生号 7000000+穿戴者"才是默认式仗, 才该非 0(客户端据此摘出仓库).
+      const isDefault = only === '7000000' + Number(wOf(wi, 2).value);
+      assert.equal(Number(wOf(wi, 9).value) !== 0, isDefault,
+        `${only}: defleaderId=${Number(wOf(wi, 9).value)} 与"是否默认式仗"(${isDefault})不一致 `
+        + '(非默认式仗被标成默认 -> 仓库里看不见; 默认式仗标 0 -> 能被误分解)');
+    }
+    const w = list.map((f) => GProto.decodeFields(f.value)).find((wi) => wi.find((x) => x.field === 6)?.value.toString() === WID);
+    assert.equal(Number(wOf(w, 9).value), 0, '测试武装不是派生号 -> defleaderId 必须 0(否则仓库里看不见)');
+    // 其余角色没有装备行, 物化要按历史派生号 7000000+leaderId 补出默认式仗(客户端早就按它索引).
+    const defs = list.map((f) => GProto.decodeFields(f.value)).filter((wi) => {
+      const lv = Number(wOf(wi, 2).value);
+      return lv > 0 && wOf(wi, 6).value.toString() === '7000000' + lv;
+    });
+    assert.ok(defs.length, '没装备的角色要物化出默认式仗');
+    for (const d of defs) {
+      assert.equal(Number(wOf(d, 9).value), Number(wOf(d, 2).value),
+        '派生号的 defleaderId = 穿戴者, 客户端才把它从仓库列表里摘出去');
+    }
+  } finally {
+    restore();
+  }
+});
+
+// 物化必须"写一次就落得住": 三套 onlyId 并存时最容易写出"改了内存、重启就回原样"的假成功.
+await check('B2 物化: 空/撞号 onlyId 走 wSeq 发号, 落盘后重启不跳号不跳数', async () => {
+  const base = armSave();
+  base.weapons.push(wInst('', WCFG), wInst(WMAT1, WCFG)); // 空号 + 撞号
+  const restore = useSave(base);
+  try {
+    const { HANDLERS } = await import('../dist/payloads.js');
+    const run = () => {
+      const r = HANDLERS[10007]({ msgId: 10007, packetUUid: 1, proto: GProto.vfield(1, 0), headerHex: '' });
+      return Buffer.isBuffer(r) ? r : r.body;
+    };
+    run();
+    const afterFirst = SAVEM.loadSave();
+    const ids = afterFirst.weapons.map((w) => w.onlyId);
+    assert.equal(new Set(ids).size, ids.length, `物化后 onlyId 必须唯一: ${ids.join(',')}`);
+    assert.ok(afterFirst.wSeq >= 2, `两个坏号该发 2 个新 wSeq, 现在 ${afterFirst.wSeq}`);
+    const randOfFirst = afterFirst.weapons.map((w) => w.rand.key.join('|')).join('/');
+    run();                                       // 再走一遍(相当于重开客户端/重登)
+    const again = SAVEM.loadSave().weapons.map((w) => w.rand.key.join('|')).join('/');
+    assert.equal(again, randOfFirst, '随机数必须由 onlyId 播种, 同一把武器重启不跳数');
+  } finally {
+    restore();
+  }
+});
+
+// 负控: 上面那批 17/18 断言不是空跑 —— 故意把 18 编短一条, 必须变红.
+await check('B2 负控: 18 少编一条属性, 形状断言必须抛(这正是真机上"确认页崩"的形状)', () => {
+  const cur = WEAP.rollWeapon(WCFG, WEAP.seedOf(WID), SAVEM.emptyRand());
+  const pend = WEAP.pendingHalf(WEAP.rollWeapon(WCFG, WEAP.seedOf(WID, 1), cur, WEAP.keepFor(cur, 1)), 1);
+  // WeaponRandomInfo 的手写编码: 存档形状(SaveWeaponRand)直接铺成 wire, 四列各自一条 tag.
+  const enc = (r) => GProto.concat(
+    ...r.skill.map((id) => GProto.vfield(1, id)),
+    r.key.length ? GProto.bfield(2, GProto.concat(
+      ...r.key.map((k) => GProto.vfield(1, k)),
+      ...r.val.map((v) => GProto.dblfield(2, v)),
+      GProto.dblfield(4, r.scope || 1),
+      ...r.poolIdx.map((p) => GProto.vfield(5, p)),
+      ...r.attrIdx.map((a) => GProto.vfield(6, a)),
+    )) : Buffer.alloc(0),
+  );
+  const short = { ...pend, key: pend.key.slice(0, 1), val: pend.val.slice(0, 1),
+    poolIdx: pend.poolIdx.slice(0, 1), attrIdx: pend.attrIdx.slice(0, 1) };
+  const info = GProto.decodeFields(GProto.concat(
+    GProto.bfield(17, enc(cur)),
+    GProto.bfield(18, enc(short)),
+  ));
+  assert.ok(cur.key.length === 2 && short.key.length === 1, '负控得真的少一条, 否则这条检查是空跑');
+  assert.throws(() => assertRecastShape('负控', info, WCFG, 1), /!=|条数/);
 });
 
 // ---------------------------------------------------------------- 5. 工具链

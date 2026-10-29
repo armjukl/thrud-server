@@ -1,6 +1,6 @@
 # 斯露德假服 · 待补功能
 
-> 最后更新：2026-10-28 ｜ 协议现状 [`README-协议清单.md`](README-协议清单.md) ｜ 当前方案 [`README.md`](README.md)
+> 最后更新：2026-10-29 ｜ 协议现状 [`README-协议清单.md`](README-协议清单.md) ｜ 当前方案 [`README.md`](README.md)
 
 ---
 
@@ -30,7 +30,23 @@
   `LeaderInfo.seasonTalentId=24` / `baseCalcPropModelInfo=26` 仍未发。
 - **真机一轮还没跑**（自检修的是"包对不对"，测不到"面板跳不跳"）。
 
-### 1.3 角色属性覆盖（已有）
+### 1.3 武装七条（`1201/1202/1204/1205/1207/1208/1209`）—— 已做（2026-10-29，分支 `gs-parity` · B2）
+
+- 新建 [`src/weapons.ts`](../src/weapons.ts)：`WeaponInfo` 的 17/18 第一次真编出来（四列互指的取值链、
+  洗练两种"待确认"形状、按 onlyId 播种的确定性摇数），实例列表从"每次现编、不落盘"改成
+  `materializeWeapons` 的唯一真相 —— 突破/强化/分解/精炼/洗练写完就丢的那类问题到此为止。
+- 收费口径按表真扣：突破 `WeaponBreak`（0 基）、洗练 `WeaponRefining` + `WeaponRefiningLock`（两页签锁数各算各的）、
+  强化只吃经验（**不收金币**）、精炼不收钱不收物只吞同名卡。分解的返还走 `ShowItem_Push`（客户端 handler 不看 `rewards`）。
+- 上限口径修正两处路 B 的错：随机条数是 `Common["9910"+grate].value4[1]/[2]`（路 B 下标写反）、
+  精炼上限是 `TalentSkill` 的最大 `skillLevel-1`（不是恒为 6 的 `#weaponRefinePower`）。
+- 已知缺口（不影响 B2 收尾）：洗练不推进任务进度（等 B5 的 `bumpTask(2201/2204)`）；
+  `GetWeaponListPage` 仍是整表下发（没真分页）；`WeaponRefiningLock` 的锁定 UI 在 3★ 以下客户端自己算不出锁数，
+  所以 1208 对 `grate ∉ Common 99117.value4`（=4/5★）一律拒单；10 把无 `WeaponBreak` 行的武器继续被过滤掉。
+- **真机一轮还没跑**：判定点是"武装面板空白（19/20）、点保留无反应（17/18）、属性行取不到崩（`EquipAttribute`）、
+  精炼成功但等级没跳（`maxRefine` 口径）、分解后物品凭空消失（没推 `ShowItem_Push`）"—— 都属 §8 里
+  "自检修的是包对不对、测不到界面反不反应"那一类。
+
+### 1.4 角色属性覆盖（已有）
 
 - `characters[].attrs`（属性id→值）可**直接覆盖**终值（hp=100/atk=101/def=102/en=103/crit=104/击破=305/暴击率=201/暴击伤害=200）。
 - 默认属性按 `level/breach + 武器` 用客户端 `Attribute/GrowAttribute/LeaderBreak/WeaponBreak` 表算（[`src/attrs.ts`](../src/attrs.ts)）；
@@ -148,8 +164,9 @@
 
 ## 7. 建议顺序
 
-0. **对齐路 B 假 GS**（分支 `gs-parity`，地基已合）—— 第一档余 **B2 武装 → B3 通关发经验 → B4 挂机 →
-   B5 任务 → B6 签到**；每档 `build/selftest` 全绿 + 一轮真机才开下一档。B3 会顺手解掉 §1.1。
+0. **对齐路 B 假 GS**（分支 `gs-parity`，地基 + B1 养成 + B2 武装已做）—— 第一档余 **B3 通关发经验 →
+   B4 挂机 → B5 任务 → B6 签到**；每档 `build/selftest` 全绿 + 一轮真机才开下一档。B3 会顺手解掉 §1.1。
+   ⚠ B1/B2 的真机轮**攒在一起跑**（跑之前先按 [存档修改](README-存档修改.md)「给武装 B2 的真机轮备料」补材料）。
 1. **通关加经验 / 统御等级成长**（§1.1）—— 让关卡/章节自然解锁，别再靠手改 `player.level`
 2. 肉鸽 `9300009` / 元素塔 `9400004` / 乌拉拉 `20001`（补骨架数据）
 3. 抽卡做真（概率/保底/UP/消耗）
