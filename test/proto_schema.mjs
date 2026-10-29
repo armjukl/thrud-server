@@ -88,13 +88,16 @@ function bodyFields(body, file) {
   return fields;
 }
 
-/** 解析全部 .proto -> { msgs: Map<名称, Map<字段号, FieldDef[]>>, cmds: Map<号, 名>, cmdByName: Map<名, 号> }. */
+/** 解析全部 .proto -> { msgs: Map<名称, Map<字段号, FieldDef[]>>, cmds: Map<号, 名>, cmdByName: Map<名, 号>, enums: Set } */
 function parseAll() {
   const msgs = new Map();
   const cmds = new Map();
   const cmdByName = new Map();
+  const enums = new Set();
   for (const fn of fs.readdirSync(DIR).filter((f) => f.endsWith('.proto')).sort()) {
     const text = stripComments(fs.readFileSync(path.join(DIR, fn), 'utf8'));
+    // 枚举字段在线上是 varint: RecastingType/SelectRandomType 若按"非内建标量=嵌套"判成 wire=2 就是假红
+    for (const m of text.matchAll(/\benum\s+([A-Za-z_]\w*)/g)) enums.add(m[1]);
     if (fn === 'CmdDefine.proto') {
       for (const m of text.matchAll(/([A-Za-z_][\w]*)\s*=\s*(\d+)\s*;/g)) {
         const no = Number(m[2]);
@@ -113,7 +116,7 @@ function parseAll() {
       }
     }
   }
-  return { msgs, cmds, cmdByName };
+  return { msgs, cmds, cmdByName, enums };
 }
 
 let cache = null;
@@ -150,6 +153,7 @@ export function fieldType(msg, no) {
 const WIRE_NAME = { 0: 'varint', 1: '64-bit', 2: 'length-delimited', 5: '32-bit' };
 function expectedWire(type) {
   if (type === 'string' || type === 'bytes') return 2;
+  if (db().enums.has(type)) return 0;            // 枚举 = varint
   if (!SCALARS.has(type)) return 2;             // message: 嵌套
   if (type === 'double' || type === 'fixed64' || type === 'sfixed64') return 1;
   if (type === 'float' || type === 'fixed32' || type === 'sfixed32') return 5;

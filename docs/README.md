@@ -21,7 +21,8 @@
 | 只靠 hook 的本地化 | 🚧 复刻 PC 纪念版的脚本集已落地（`frida-gadget/`，离线 33 项构建自检 + 39 条真字节断言全绿），**真机一轮还没跑**（[`../../frida-gadget/README.md`](../../frida-gadget/README.md)） |
 | 资源完整性 | ✅ 1583 台账 44,841 条 **逐条 md5 对得上**（改过的 Lua chunk 连带台账那一条 md5 一起换，见 §3 第 1 条） |
 | 养成（升级/突破/星级/技能/式杖） | 🚧 分支 `gs-parity` · B1 已落 9 条：`1001`（原来是"每次 +1 级"的简化版）+ 新接 `1002 1003 1004 1005 1008 1010 1011 1016`，真扣材料 / 真走曲线 / 满级与材料不足**拒单不推 push**（见 [协议清单](README-协议清单.md) §4.1）；真机一轮待跑 |
-| 假服地基（对齐路 B） | 🚧 分支 `gs-parity`：36 张整表进 `src/data/tbl/` + `tbl.ts` 取数面、`econ.ts`/`skills.ts` 扣费发奖与升级曲线、`save.ts` 原子写 + `.bak` 回退 + 结构迁移，自检 46/46；`HANDLERS` 49 条；第一档余 **B2 武装 / B3 通关 / B4 挂机 / B5 任务 / B6 签到**（见 [待补功能](README-待补功能.md)） |
+| 武装（突破/强化/分解/上锁/精炼/洗练） | 🚧 分支 `gs-parity` · B2 已落 7 条 `1201 1202 1204 1205 1207 1208 1209`：新建 `src/weapons.ts`，`WeaponInfo` 的随机字段 **17/18** 第一次真编出来，实例列表改成落盘的单一真相（见 [协议清单](README-协议清单.md) §4.2/§4.3）；真机一轮待跑（先备材料，见 [存档修改](README-存档修改.md)） |
+| 假服地基（对齐路 B） | 🚧 分支 `gs-parity`：36 张整表进 `src/data/tbl/` + `tbl.ts` 取数面、`econ.ts`/`skills.ts`/`weapons.ts` 扣费发奖与升级曲线、`save.ts` 原子写 + `.bak` 回退 + 结构迁移，自检 66/66；`HANDLERS` 56 条；第一档余 **B3 通关 / B4 挂机 / B5 任务 / B6 签到**（见 [待补功能](README-待补功能.md)） |
 
 剩余问题全部是**服务端协议未实现**，不是资源/客户端问题。扣费/经验/曲线这类原语此前在 `src/`
 里一个都没有（旧 41 条 handler 无一条减过库存），现在地基到位、养成已按表扣费，缺的只是把余下命令逐条接上去。
@@ -189,6 +190,7 @@
 | `data/tbl/*.ts` | `tools/gen_tables.py` 生成的 36 张整表（`const RAW="<json>"` + 惰性 `raw()`），**勿手改，改表改生成器** |
 | `econ.ts` | 经济原语：`checkConsume/payConsume/costItem/payItemList/addItem/addMoney/addStrength/addExp/rewardById/rollPlayerLv/catchUpStrength` + 角色/武装升级曲线。语义对齐路 B，取数一律走 `tbl.ts`；只改存档、把改动记进 `Effects`，**不 import `payloads.ts`**（免环） |
 | `skills.ts` | 主动/天赋/式杖技能升级：上限双卡（`LeaderBreak.skillLevel` 与表内最大 `skillLevel`），满级或材料不足一律不推进 |
+| `weapons.ts` | 武装实例与随机数：`materializeWeapons`（空/撞号发号、按角色补默认式仗，是 `weaponInstances`/`equippedWeaponOf` 的唯一来源）、确定性 `rollWeapon`、17/18 的两种"待确认"编码形状、突破/精炼/洗练的表口径；同样**不 import `payloads.ts`** |
 | `data/conditions.ts` / `data/guides.ts` | 补丁数据：conditionSet 全量下发、强制跳过新手引导 |
 | `data/{lottery,drop,dropset,dropgroup}.ts` / `gacha.ts` | 抽卡按池真实掉落链（客户端表）；`dropAll()` 是"整条必掉就整批发"的口径 |
 | `data/{leader,weapon,rarity,...}.ts` | 自动生成的客户端表（本体 / 品质 1..5 等） |
@@ -198,11 +200,14 @@
 
 | 指标 | 数字 | 阈值 |
 |---|---|---|
-| `npm run typecheck` | 4.82 s，峰值 RSS 361 MB | ≤ 8 s |
-| `npm run build`（`rm -rf dist` 后） | 5.60 s，峰值 RSS 374 MB | ≤ 15 s |
-| `src/data/tbl` / `dist` 体积 | 13 MB / 14 MB | — |
+| `npm run typecheck` | 5.99 s，峰值 RSS 357 MB | ≤ 8 s |
+| `npm run build`（`rm -rf dist` 后） | 6.33 s，峰值 RSS 371 MB | ≤ 15 s |
+| `npm run selftest`（66 条） | 23 s，峰值 RSS 169 MB | — |
+| `src/data/tbl` / `dist` 体积 | 13 MB / 15 MB | — |
 | 36 张表全 parse（25 193 行） | 103 ms | 起服增量 ≤ 400 ms |
 | `payloads.ts` 模块图加载 | 36 ms（惰性 parse，未取到的表不花钱） | — |
+
+（2026-10-29 B2 后重测：新增 `weapons.ts` 与 20 条自检，typecheck 4.82→5.99 s、build 5.60→6.33 s，仍在阈值内。）
 
 形状必须是 `const RAW = "<整表 JSON 单行>"` + `JSON.parse`：**类型化字面量在 4.6 MB 单文件上会让 tsc OOM**（161 s 后被杀），
 而 `JSON.parse` 形状 10.58 MB / 32 表只要 1.08 s。单文件超 4 MB 时生成器自动切列存 `{"c":[cols],"r":[[…]]}`（同批小 3.6×），由 `tbl.ts` 展开，业务代码不改。

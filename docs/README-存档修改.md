@@ -1,13 +1,14 @@
 # 斯露德假服 · 存档修改
 
-> 最后更新：2026-10-28 ｜ 数据文件都在 [`offline-server/data/`](../data/) ｜ 当前方案 [`README.md`](README.md)
+> 最后更新：2026-10-29 ｜ 数据文件都在 [`offline-server/data/`](../data/) ｜ 当前方案 [`README.md`](README.md)
 
 斯露德没有一份客户端「玩家存档文件」可改：客户端自己维护本地进度，服务器每次登录按收到的请求现算。
 假服里能持久化并被读回的玩家数据，全部集中在**一份** `data/save.json`（可读可写）。读写在
 [`src/save.ts`](../src/save.ts)：
 
 - **读**：每次请求 `loadSave()` 重读 → 手工改 JSON **改完即生效，不用重启**；
-- **写**：游戏内变化（改名 / 改性别 / 换看板 / 换装 / 换武器 / 升级 / 序章推进 / 通关 / 抽卡 / 签到）由服务端改完 `saveSave()` **回写**。
+- **写**：游戏内变化（改名 / 改性别 / 换看板 / 换装 / 升级 / 序章推进 / 通关 / 抽卡 / 签到 + 武装一族：
+  换武装、突破、强化、分解、上锁、精炼、洗练保留）由服务端改完 `saveSave()` **回写**。
 - 缺字段/格式错由 `normalizeSave()` 补默认值，不会导致启动失败。
 - `saveSave()` **原子写**：`save.json.tmp` → 旧的 `save.json` 复制成 `save.json.bak` → `rename`。
   `loadSave()` 的回退链是 `save.json` → `save.json.bak` → 默认档，**不会**因为一次写盘中断就把整档滚回新号
@@ -79,10 +80,10 @@
 | `characters[].talentLv` | 被动(天赋)技能等级：`skillId→等级`（1004） | `LeaderInfo.talentSkills(11)` `TalentSkill{id,level,state}` |
 | `characters[].stick` | 式杖技能槽：`槽位id→LeaderWandSkill 行id`（1010 换槽；`ResetStickSkill` 1011 **只清这一项**） | `LeaderInfo.stickSkills(23)` `ProtoHashInt2Int` |
 | `characters[].stickLv` | 式杖技能等级：`skillId→等级`（1016；上限取 `TalentSkill_Xls` 里该 skillId 的最大 `skillLevel`，**不是 `Skill_Xls.maxLevel`**——它恒为 1） | `LeaderInfo.stickSkillLevel(27)` `StickSkillLevel{id,level,state}` |
-| `weapons[]` | 式仗实例列表（`onlyId` 唯一；`leaderId`=穿戴者，0=闲置）；空则按角色补默认。**新实例的 `onlyId` 由 `wSeq` 发号**，旧的 `"7000000"+leaderId` 派生号不迁移 | `PlayerLoginGetInfo_S2C.weaponInfos(32)` + `GetWeaponListPage(10007)` |
-| `weapons[].recastingTime` / `recastingSkillTime` | **已洗属性/技能次数**（不是时刻！）：客户端 `NeedRecastingTips` 判 `grate==5 且 ==0` 才提示"该洗了"，所以从 0 起、每洗 +1 | `WeaponInfo` required 19 / 20 |
-| `weapons[].rand` | 当前生效的随机结果（`key/val/poolIdx/attrIdx` **四列长度必须一一对应**，`normalizeSave` 会按最短截齐；属性 id 只能取自 `EquipAttribute_Xls`） | `WeaponInfo.weaponRandomInfo(17)` |
-| `weapons[].last` | 洗出来还没保留的那组（`SelectWeaponRandomInfo` 在它和 `rand` 之间选） | `WeaponInfo.lastWeaponRandomInfo(18)` |
+| `weapons[]` | 式仗实例列表（`onlyId` 唯一；`leaderId`=穿戴者，0=闲置）；缺装备的角色由 `materializeWeapons` 当场补一把默认式仗。`onlyId` **三套并存**（见「武装 onlyId 三套号」）：派生号 `"7000000"+leaderId` / 早期抽卡的 `"7g<cfg>-<n>"` / `wSeq` 新发的 `"7000000"+n`，都不迁移 —— 客户端按 onlyId 索引，换号等于全丢 | `PlayerLoginGetInfo_S2C.weaponInfos(32)` + `GetWeaponListPage(10007)` |
+| `weapons[].recastingTime` / `recastingSkillTime` | **已洗属性/技能次数**（不是时刻！）：客户端 `NeedRecastingTips` 判 `grate==5 且 ==0` 才提示"该洗了"，所以从 0 起、每洗 +1；1208 也是按"次数 +1"再播种摇下一组 | `WeaponInfo` required 19 / 20 |
+| `weapons[].rand` | 当前生效的随机结果（`key/val/poolIdx/attrIdx` **四列长度必须一一对应**，`normalizeSave` 会按最短截齐；属性 id 只能取自 `EquipAttribute_Xls`，取值落在 `attributeRange` 内）。空档时按 **onlyId 播种**的 LCG 现摇，所以手改 `onlyId` 会换一组数 | `WeaponInfo.weaponRandomInfo(17)` |
+| `weapons[].last` | 洗出来还没保留的那组，**只存被重摇的那一半**：洗属性→只有 `key/val/poolIdx/attrIdx`（`skill` 留空），洗技能→只有 `skill`。两半都填等于存两份真相，客户端 `IsRecastingOver` 会同时判成"属性和技能都待确认"。手改档时宁可乐空，别造半个 | `WeaponInfo.lastWeaponRandomInfo(18)` |
 | `items` | 背包道具 `itemId→数量`（只发客户端 `Items_Xls` 里存在的 id） | `PlayerLoginGetInfo_S2C.parts(12)` |
 | `money` | 货币 `itemId→数量` | `PlayerLoginGetInfo_S2C.moneyPart(62)` |
 | `cloths` | 已拥有角色战装(皮肤) id | `clothingInfo(41)` |
@@ -98,6 +99,21 @@
 | `hangUp` | 挂机/外派会话：`type`/`levelId`/`times`/`startTime`(**秒**)/`endTime`(**秒**)/`state`（0=没在挂；`HangUpInfo.state` 是 required **int64**） | `GetHangUpInfo(30400)` 一族 |
 | `wSeq` | 武装 `onlyId` 发号器（当前值 +1 拼成号） | — |
 | `regTime` | 建档时刻(**秒**)，七日/体力回算的锚点 | `FirstThought` 的 `signTimeStamp` 等 |
+
+### 武装 onlyId 三套号（2026-10-29，B2）
+
+| 形态 | 例子 | 怎么来的 | 编进协议时 |
+|---|---|---|---|
+| 派生号 | `"7000000" + leaderId` | 老实现给每个角色合成的默认式仗，客户端早已按它索引 | `WeaponInfo.defleaderId(9) = leaderId` → `CheckIsDefaultWeapon` 为真，**从武装仓库列表里摘出去**、也不可分解 |
+| 抽卡号 | `"7g5041010-3"` | 早期 `payloads.ts` 直接拼的（现档 27 把） | `defleaderId = 0` |
+| `wSeq` 号 | `"7000000" + ++wSeq` | `econ.grantWeapon` / `materializeWeapons` 给空号、撞号、新实例发 | `defleaderId = 0` |
+
+`defleaderId` **认号不认人**：只有"派生号 == 穿戴者"才算默认式仗。手改档时把 `leaderId` 挪给别人，
+派生号就自动降级成普通库存（这才对得上客户端 `359/383` 那两处过滤）。反过来，给一把 `wSeq` 号写
+`defleaderId>0` 会让它在仓库里**凭空消失**。
+
+10007（`GetWeaponListPage`）是"发号 + 落盘"的时机：物化当场编出来的号必须留在档里，
+否则下次登录又换一套号，客户端按 onlyId 建的索引全乱。
 
 ### 时间戳口径（混用是挂机/签到最容易错的点）
 
@@ -149,6 +165,31 @@
   ]
 }
 ```
+
+---
+
+### 例：给武装 B2 的真机轮备料
+
+假服的洗练/突破/强化是**真扣费**的，档里没料就每条都拒单 —— 现象像"没实现"，其实是 `deny`。
+`data/save.json` 里补这几项（改完即生效，不用重启）：
+
+```json
+{
+  "money": { "10": 999999 },
+  "items": { "1030011": 60, "1030012": 60,
+             "1090101": 100, "1090102": 100, "1090001": 50 }
+}
+```
+
+| id | 用处 | 单笔量 |
+|---|---|---|
+| `10`（金币，走 `money`） | 突破 27000 起 / 洗练每笔 7500 | 强化**不收金币**（`WeaponGrow.parNum` 全空） |
+| `1030011` / `1030012` | 突破材料（按 `WeaponBreak[...].consumeId` 的档位） | 5041010 首突 20 个 |
+| `1090101` 改组零件 | 洗练本体花费（`WeaponRefining[grate]`） | 每笔 10 个 |
+| `1090102` 定向固锁零件 | 锁定花费（`WeaponRefiningLock[锁数]`） | 属性页 `5×锁数`、技能页 `5×(锁数+1)`；锁数 >4 客户端直接崩 |
+| `1090001` 式仗经验料 | 强化经验 | 每份 200 经验 |
+
+精炼（1207）**不收任何材料**，但要喂同配置的闲置武装实例当卡 —— 想试它就往 `weapons[]` 里多塞几把同 `cfg` 的。
 
 ---
 

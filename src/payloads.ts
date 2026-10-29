@@ -24,12 +24,22 @@ import { LEADER_DEBRIS } from "./data/leaderdebr.js";
 import { LEADER_QUALITY, WEAPON_GRATE } from "./data/rarity.js";
 import { poolDraw } from "./gacha.js";
 import {
-  checkConsume, countItem, leaderLevelExp, leaderMaxLv, newEffects, payConsume, payItemList,
-  upgradeByExp, type Effects,
+  addItem, addMoney, checkConsume, countItem, fixedRewardItems, grantWeapon, ITEMTYPE, itemType,
+  leaderLevelExp, leaderMaxLv, newEffects, payConsume, payItemList, upgradeByExp, weaponLevelExp,
+  weaponMaxLv, type Effects,
 } from "./econ.js";
 import { setSkillLv, skillConsumeId, skillLv, stickMaxLv, upgradeSkill } from "./skills.js";
-import { all, arr } from "./tbl.js";
-import { characterById, defaultCharacter, loadSave, newWeapon, saveSave, type SaveCharacter, type SaveData, type SaveWeapon } from "./save.js";
+import { all, arr, num, row } from "./tbl.js";
+import {
+  characterById, defaultCharacter, emptyRand, loadSave, saveSave,
+  type SaveCharacter, type SaveData, type SaveWeapon, type SaveWeaponRand,
+} from "./save.js";
+import {
+  RECAST_PROP, RECAST_SKILL, SELECT_NEW, SELECT_OLD, applyPending, breakConsume, defLeaderOf,
+  equippedWeaponOf, findWeapon, grateOf, keepFor, lastBufFor, materializeWeapons, maxRefineOf,
+  pendingHalf, randIsEmpty, rollWeapon, seedOf, weaponInstances, weaponRandomInfoBuf,
+  weaponTotalExp,
+} from "./weapons.js";
 
 export interface GsRequest {
   msgId: number | null;
@@ -112,6 +122,15 @@ export const CMD = {
   ResetStickSkill: 1011,
   UpgradeStickSkill: 1016,
   SwitchWeapon: 1203,
+  // 武装 (B2): 突破/强化/分解/上锁/精炼/洗练/选保留. 号见 proto/CmdDefine.proto:98-106
+  // (1206 SwitchWeaponSkin 是涂装, 不在本轮).
+  UpgrageWeaponBreach: 1201,
+  UpgrageWeapon: 1202,
+  DecomposeWeapon: 1204,
+  ChangeWeaponLock: 1205,
+  UpgradeWeaponRefineLevel: 1207,
+  RecastingWeapon: 1208,
+  SelectWeaponRandomInfo: 1209,
   GetPayShopData: 30300,
   DataPush: 900011,
   // 抽卡(简化)
@@ -169,6 +188,14 @@ function reqStr(req: GsRequest | undefined, field: number): string {
   if (!req?.proto) return "";
   const f = pb.decodeFields(req.proto).find((x) => x.field === field && x.wire === 2);
   return f && Buffer.isBuffer(f.value) ? f.value.toString("utf8") : "";
+}
+
+/** 请求里 repeated string 字段的全部值 (分解/精炼送的是"一串 onlyId"). */
+function reqStrs(req: GsRequest | undefined, field: number): string[] {
+  if (!req?.proto) return [];
+  return pb.decodeFields(req.proto)
+    .filter((x) => x.field === field && x.wire === 2 && Buffer.isBuffer(x.value))
+    .map((x) => (x.value as Buffer).toString("utf8"));
 }
 
 function reqNum(req: GsRequest | undefined, field: number): number | null {
@@ -297,12 +324,9 @@ function changeSexS2C(req: GsRequest): Buffer {
 // favorabilityLevel/favorabilityExp/clothingId/weaponId/signLv/perkId.
 // HeroData:SetHeroAttr 会直接读 calcPropModelInfo.attributeMap, 所以必须带上.
 // 数值全部来自存档 data/save.json 的 characters[].
-// 每个角色一把"默认式仗"实例的 onlyId (客户端按它索引已下发的武器实例). 确定性生成,
-// 重启不变; leaderInfo.weaponId 与 GetWeaponListPage 用同一个值才能对上.
-const weaponOnlyId = (leaderId: number): string => "7000000" + leaderId;
-
-// 该角色 Leader 表的默认武器配置 id (穿戴式仗).
-const weaponCfgOf = (leaderId: number): number => LEADER[leaderId]?.[0] ?? 0;
+//
+// 式仗实例的 onlyId 发号/物化/默认杖判定全在 weapons.ts —— leaderInfo.weaponId 与
+// GetWeaponListPage 必须报同一个号, 客户端才索引得到那把实例.
 
 /**
  * 养成面板的被动技能集合 = Leader_Xls.commonSkillId(普攻) + talentSkill(突破解锁的被动).
@@ -313,45 +337,32 @@ const talentIdsOf = (leaderId: number): number[] =>
   [...new Set([...arr("Leader", leaderId, "commonSkillId"), ...arr("Leader", leaderId, "talentSkill")]
     .map(Number).filter((n) => n > 0))];
 
-// 角色终值属性 (自身等级/突破 + 穿戴武装 + 存档覆盖); 表缺失时回退占位.
+/** 随机属性并入基础属性 (真服是合好再下发; 客户端"把武装并进角色"那段代码是注释掉的). */
+function mergeRandAttrs(m: Map<number, number>, r: SaveWeaponRand): Map<number, number> {
+  for (let i = 0; i < r.key.length; i++) {
+    const k = r.key[i]!;
+    m.set(k, (m.get(k) || 0) + (r.val[i] || 0));
+  }
+  return m;
+}
+
+// 角色终值属性 (自身等级/突破 + 穿戴武装 + 武装随机属性 + 存档覆盖); 表缺失时回退占位.
 function heroAttrs(s: SaveData, c: SaveCharacter): AttrKV {
-  const w = equippedWeapon(s, c.id);
-  const m = new Map(heroAttrMap(c.id, c.level, c.breach, w.cfg, w.level, w.breach));
+  const w = equippedWeaponOf(s, c.id);
+  const m = mergeRandAttrs(new Map(heroAttrMap(c.id, c.level, c.breach, w.cfg, w.level, w.breach)), w.rand);
   for (const [k, v] of Object.entries(c.attrs || {})) m.set(Number(k), v); // 存档覆盖: 直接改终值
   if (!m.size) for (const [k, v] of DEFAULT_ATTRS) m.set(k, v);
   return [...m.entries()].map(([k, v]) => [k, v] as [number, number]);
 }
 
-// 武装属性 (基础 + 等级成长); 表缺失时回退占位.
-function weaponAttrs(cfg: number, level = 1, breach = 0): AttrKV {
-  const a = [...weaponAttr(cfg, level, breach).entries()];
+// 武装属性 (基础 + 等级成长 + 随机属性); 表缺失时回退占位.
+function weaponAttrsOf(w: SaveWeapon): AttrKV {
+  const a = [...mergeRandAttrs(weaponAttr(w.cfg, w.level, w.breach), w.rand).entries()];
   return a.length ? a : DEFAULT_ATTRS;
 }
 
-// 武器实例列表: 用存档 weapons[]; 补空 onlyId; 并保证每个角色都有一把"已装备"的默认武器.
-// 过滤掉无突破配置(WeaponBreak_Xls 缺行)的武器: 客户端 SetRedPointData_Break 会 index 到 nil 而崩,
-// 进而中断登录 InitPlayerServerInfo 后续(抽卡/成就面板不初始化).
-function weaponInstances(s: SaveData): SaveWeapon[] {
-  const list = s.weapons
-    .filter((w) => WEAPON_BREAK[w.cfg])
-    .map((w, i) => ({ ...w, onlyId: w.onlyId || "7" + (w.cfg || 0) + "-" + i }));
-  for (const c of s.characters) {
-    if (!list.some((w) => w.leaderId === c.id)) {
-      const cfg = weaponCfgOf(c.id);
-      if (WEAPON_BREAK[cfg]) list.push(newWeapon(weaponOnlyId(c.id), cfg, c.id));
-    }
-  }
-  return list;
-}
-
-// 某角色当前穿戴的武器实例 (没有就补一把默认).
-function equippedWeapon(s: SaveData, leaderId: number): SaveWeapon {
-  return weaponInstances(s).find((w) => w.leaderId === leaderId)
-    ?? newWeapon(weaponOnlyId(leaderId), weaponCfgOf(leaderId), leaderId);
-}
-
 function leaderInfo(s: SaveData, c: SaveCharacter): Buffer {
-  const w = equippedWeapon(s, c.id);
+  const w = equippedWeaponOf(s, c.id);
   const lm = LEADER[c.id];
   const wm = WEAPON[w.cfg];
   const shooting = wm ? wm[0] : 0;
@@ -494,7 +505,7 @@ export function playerLoginGetInfoS2C(): Buffer {
       pb.vfield(1, 2), pb.vfield(2, 3), pb.sfield(3, "23.147.232.29"), pb.vfield(4, 19005), pb.vfield(5, 1),
     )),
     // weaponInfos=32 (repeated WeaponInfo): 式仗实例集合(与 GetWeaponListPage 同源).
-    ...weaponInstances(s).map((w) => pb.bfield(32, weaponInfoFromInst(w))),
+    ...weaponInstances(s).map((w) => pb.bfield(32, weaponInfoFromInst(s, w))),
     // parts=12 (repeated Part): 背包道具; moneyPart=62 (repeated MoneyPart): 货币.
     ...partsBody(s).map((p) => pb.bfield(12, p)),
     ...moneyPartBody(s).map((m) => pb.bfield(62, m)),
@@ -632,7 +643,9 @@ function getWeaponListPageS2C(req: GsRequest): Buffer {
   // 每个角色下发一把默认式仗实例(客户端 WeaponDataManager 只认服务端下发的实例).
   const s = loadSave();
   const page = reqNum(req, 1) ?? 0;
-  const infos = weaponInstances(s).map(weaponInfoFromInst);
+  const infos = weaponInstances(s).map((w) => weaponInfoFromInst(s, w));
+  // 物化可能当场给空/撞号的实例发了新 onlyId —— 不落盘下次登录又换一套号, 客户端按 onlyId 索引就全乱.
+  saveSave(s);
   log("info", "weapon", `GetWeaponListPage page=${page} -> ${infos.length} 把式仗`);
   return pb.concat(
     ...infos.map((w) => pb.bfield(1, w)), // weaponInfos
@@ -707,7 +720,12 @@ const DEFAULT_ATTRS: Array<[number, number]> = [[100, 1000], [101, 100], [102, 5
 
 // WeaponInfo (msg.proto): 武装(式仗)实例. required: id/leaderId/exp/level/breachLevel/onlyId/getTime/
 // defleaderId/skinId/lockState/recastingTime/recastingSkillTime —— 一个都不能缺, 否则 Lua 解码报错.
-function weaponInfoFromInst(w: SaveWeapon): Buffer {
+// 19/20 是**终身洗练次数**, 不是时间戳 (客户端只拿它判"首次洗要不要弹确认").
+function weaponInfoFromInst(s: SaveData, w: SaveWeapon): Buffer {
+  // 17/18 编码函数对"没有这组数据"回空 Buffer; 这里必须整个字段省略, 不能发一个空的 message
+  // —— 空 message 解出来是张空表, 客户端那些 `18 and 18.secondaryPropInfo...` 的判据就全走偏了.
+  const randBuf = weaponRandomInfoBuf(w.rand);
+  const lastBuf = lastBufFor(w.rand, w.last);
   return pb.concat(
     pb.vfield(1, w.cfg),                    // id (配置id, required)
     pb.vfield(2, w.leaderId),               // leaderId (required)
@@ -715,15 +733,65 @@ function weaponInfoFromInst(w: SaveWeapon): Buffer {
     pb.vfield(4, w.level),                  // level (required)
     pb.vfield(5, w.breach),                 // breachLevel (required)
     pb.sfield(6, w.onlyId),                 // onlyId (required string)
-    pb.bfield(7, battlePropModelInfo(weaponPower(w.cfg, w.level, w.breach), weaponAttrs(w.cfg, w.level, w.breach))), // calcPropModelInfo
-    pb.vfield(8, 1649992649),               // getTime (required)
-    pb.vfield(9, w.leaderId),               // defleaderId (required)
+    pb.bfield(7, battlePropModelInfo(weaponPower(w.cfg, w.level, w.breach), weaponAttrsOf(w))), // calcPropModelInfo
+    pb.vfield(8, Math.floor(s.regTime) || 0), // getTime (required, 秒) —— 存档没记单把的获得时刻, 统一用建档时刻
+    pb.vfield(9, defLeaderOf(w)),           // defleaderId (required) 默认式仗=所属角色, 其余=0
     pb.vfield(10, w.skin),                  // skinId (required)
     pb.vfield(11, w.lock),                  // lockState (required)
     pb.vfield(12, w.refine),                // refineLevel
-    pb.vfield(19, 0),                       // recastingTime (required)
-    pb.vfield(20, 0),                       // recastingSkillTime (required)
+    ...(randBuf.length ? [pb.bfield(17, randBuf)] : []), // weaponRandomInfo (生效中的随机数据)
+    ...(lastBuf.length ? [pb.bfield(18, lastBuf)] : []), // lastWeaponRandomInfo (洗出来没确认的那半)
+    pb.vfield(19, w.recastingTime),         // recastingTime (required) 已洗属性次数
+    pb.vfield(20, w.recastingSkillTime),    // recastingSkillTime (required) 已洗技能次数
   );
+}
+
+/**
+ * 武装写操作后刷新面板的那条 Data_Push:
+ *   weaponChanged=7 刷武装本身, leaderAttrChanged=5 刷穿戴者(精炼/突破都改他的属性),
+ *   changeMoney=2 / changePart=10 刷顶栏货币与背包素材 —— 扣了东西不推这两路,
+ *   客户端的数量要等下次登录才对得上.
+ * 金币(id 10 之类)在 Items_Xls 里 itemType=1, 只能走 MoneyPart; 硬塞进 Part 客户端没有这行.
+ */
+function weaponDataPush(s: SaveData, w: SaveWeapon | null, eff: Effects): Buffer {
+  const parts: Buffer[] = [];
+  if (w) {
+    parts.push(pb.bfield(7, pb.bfield(1, weaponInfoFromInst(s, w))));
+    const c = w.leaderId > 0 ? s.characters.find((x) => x.id === w.leaderId) : undefined;
+    if (c) parts.push(pb.bfield(5, pb.bfield(1, leaderInfo(s, c))));
+  }
+  const money: number[] = [];
+  const items: number[] = [];
+  for (const id of [...new Set([...eff.money, ...eff.items])]) {
+    (itemType(id).type === ITEMTYPE.Money ? money : items).push(id);
+  }
+  if (money.length) {
+    parts.push(pb.bfield(2, pb.concat(...money.map((id) =>
+      pb.bfield(1, pb.concat(pb.vfield(1, Math.floor(countItem(s, id))), pb.vfield(2, id)))))));
+  }
+  const shown = items.filter((id) => ITEM_VALID.has(id));
+  if (shown.length) parts.push(pb.bfield(10, pb.concat(...shown.map((id) => pb.bfield(1, partBody(id, countItem(s, id)))))));
+  return pb.concat(...parts);
+}
+
+/**
+ * Rewards{ rewardItem } 的一条. RewardItem{ itemId=1; curCount=2; count=3; type=4; rewardParInfo=5 }
+ * 里 rewardParInfo{ oldLv=1; level=2; par=3(string) } 是展示弹窗取的那个数, 缺了会崩 -> 一律带上.
+ */
+const rewardItemBody = (id: number, n: number, type = 0): Buffer =>
+  pb.concat(
+    pb.vfield(1, id), pb.vfield(2, n), pb.vfield(3, n), pb.vfield(4, type),
+    pb.bfield(5, pb.concat(pb.vfield(1, 0), pb.vfield(2, 0), pb.sfield(3, String(n)))),
+  );
+
+const rewardsBuf = (rows: Array<[number, number]>, type = 0): Buffer =>
+  pb.concat(...rows.map(([id, n]) => pb.bfield(1, rewardItemBody(id, n, type))));
+
+/** 某一档 Consume_Xls 回显成 Rewards (客户端这几条 handler 不读它, 只留给抓包对账). */
+function consumeRewards(cid: number): Buffer {
+  const ids = arr("Consume", cid, "itemId").map(Number);
+  const nums = arr("Consume", cid, "num").map(Number);
+  return rewardsBuf(ids.map((id, i) => [id, nums[i] ?? 0] as [number, number]));
 }
 
 // ActiveSkillInfo{ required id/level/type } type: 1=主动... 旧版口径: 1=武器射击(shootingtype) 2=主动 3=极奏
@@ -748,7 +816,7 @@ const stickSkillLevelBuf = (id: number, level: number): Buffer =>
 // (data/leader.ts, data/weapon.ts). required 只有 id; weapon/activeSkills/talentSkills 供 Core 建单位.
 function leaderBattleInfo(s: SaveData, c: SaveCharacter): Buffer {
   const lm = LEADER[c.id];
-  const w = equippedWeapon(s, c.id);
+  const w = equippedWeaponOf(s, c.id);
   const wm = WEAPON[w.cfg];
   const shooting = wm ? wm[0] : 0;
   const weaponSkills = wm ? wm[1] : [];
@@ -761,7 +829,7 @@ function leaderBattleInfo(s: SaveData, c: SaveCharacter): Buffer {
     pb.vfield(6, c.favorabilityLevel),
     pb.vfield(7, c.favorabilityExp),
     pb.vfield(8, c.clothingId),
-    pb.bfield(9, weaponInfoFromInst(w)), // weapon
+    pb.bfield(9, weaponInfoFromInst(s, w)), // weapon
     pb.bfield(10, battlePropModelInfo(heroPower(c.id, c.level, c.breach, w.cfg), heroAttrs(s, c))), // calcPropModelInfo
     ...weaponSkills.map((id) => pb.bfield(11, talentSkill(id, skillLv(c, id, "talent")))), // talentSkills
     ...(lm
@@ -1002,9 +1070,7 @@ function swearHeroS2C(req: GsRequest): GsResult {
       }
     } else if (WEAPON[id]) {
       rType = 2; // 获得式仗(建实例; 无突破配置的不建, 否则登录时崩)
-      if (WEAPON_BREAK[id] && !s.weapons.some((w) => w.cfg === id)) {
-        s.weapons.push(newWeapon("7g" + id + "-" + (s.weapons.length + 1), id, 0));
-      }
+      if (WEAPON_BREAK[id] && !s.weapons.some((w) => w.cfg === id)) grantWeapon(s, id);
     } else if (ITEM_VALID.has(id)) {
       s.items[String(id)] = (s.items[String(id)] || 0) + num;
     }
@@ -1260,9 +1326,12 @@ function switchWeaponS2C(req: GsRequest): Buffer {
   const s = loadSave();
   const lid = reqNum(req, 1) ?? 0;
   const oid = reqStr(req, 2);
-  const nw = s.weapons.find((w) => w.onlyId === oid);
+  // 走 weaponInstances 而不是 s.weapons: 它会把默认式仗/缺失的随机数据物化出来,
+  // 客户端能选到的实例必然在这份列表里, 回包的 WeaponInfo 也才带得齐 17.
+  const list = weaponInstances(s);
+  const nw = list.find((w) => w.onlyId === oid);
   if (!lid || !nw) { log("warn", "weapon", `SwitchWeapon 找不到实例 lid=${lid} oid="${oid}"`); return Buffer.alloc(0); }
-  const old = s.weapons.find((w) => w.leaderId === lid && w.onlyId !== oid);
+  const old = list.find((w) => w.leaderId === lid && w.onlyId !== oid);
   const other = nw.leaderId || 0;
   if (other === lid) return Buffer.alloc(0);
   nw.leaderId = lid;
@@ -1270,11 +1339,254 @@ function switchWeaponS2C(req: GsRequest): Buffer {
   saveSave(s);
   log("info", "weapon", `SwitchWeapon ${lid} <- ${oid} from=${other} out=${old?.onlyId ?? "-"}`);
   return pb.concat(
-    pb.bfield(1, weaponInfoFromInst(nw)),                       // weaponInfo (客户端 CheckValid 无条件读)
+    pb.bfield(1, weaponInfoFromInst(s, nw)),                    // weaponInfo (客户端 CheckValid 无条件读)
     pb.bfield(2, leaderInfo(s, characterById(s, lid))),         // leader
     ...(other > 0 ? [pb.bfield(3, leaderInfo(s, characterById(s, other)))] : []), // beforeLeader
-    ...(old ? [pb.bfield(4, weaponInfoFromInst(old))] : []),    // oldWeaponInfo
+    ...(old ? [pb.bfield(4, weaponInfoFromInst(s, old))] : []), // oldWeaponInfo
   );
+}
+
+// ---- 武装养成 (B2): 突破 / 强化 / 分解 / 上锁 / 精炼 / 洗练 / 选保留 ----
+// 除 1202 之外, 客户端 handler 都是"收到就无条件弹成功窗" (UIBreakUpSuccess / UIRefineUpSuccess /
+// UIWeaponRecastingSuccess / 洗练确认页), 所以任何前置不满足一律 deny —— 回一个"数值没变"的包
+// 就等于让它弹一个假成功窗, 比不弹还难查.
+// 写操作全部先 materializeWeapons(s): 旧的 weaponInstances 是"每次现编一份列表", 写完就丢.
+
+// 1201 UpgrageWeaponBreach{ required weaponId=2(onlyId) } -> { weaponInfo=1, rewards=2, leaderInfo=3 }
+function upgradeWeaponBreachS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  materializeWeapons(s);
+  const oid = reqStr(req, 2);
+  const w = findWeapon(s, oid);
+  if (!w) return deny(`1201 无实例 "${oid}"`);
+  const cap = weaponMaxLv(w.cfg, w.breach);
+  if (cap > 0 && w.level !== cap) return deny(`1201 未满级 ${oid} lv=${w.level}/${cap}`);
+  const cid = breakConsume(w.cfg, w.breach); // 本突行的 consumeId=0 就是封顶 (最后一突没有消耗档)
+  if (!cid) return deny(`1201 已封顶 ${oid} breach=${w.breach}`);
+  const [ok, why] = checkConsume(s, cid);
+  if (!ok) return deny(`1201 消耗不足 ${why}`);
+  const eff = newEffects();
+  payConsume(s, cid, eff);
+  w.breach += 1;
+  saveSave(s);
+  log("info", "weapon", `UpgrageWeaponBreach ${oid} #${w.breach - 1}->#${w.breach} 等级上限=${weaponMaxLv(w.cfg, w.breach)}`);
+  return {
+    body: pb.concat(
+      pb.bfield(1, weaponInfoFromInst(s, w)),
+      pb.bfield(2, consumeRewards(cid)),
+      w.leaderId > 0 ? pb.bfield(3, leaderInfo(s, characterById(s, w.leaderId))) : null,
+    ),
+    pushes: [[CMD.DataPush, weaponDataPush(s, w, eff)]],
+  };
+}
+
+// 1202 UpgrageWeapon{ itemInfo=1(道具), required weaponId=3(onlyId) } -> { weaponInfo=1, rewards=2, leaderInfo=3 }
+// 强化只吃经验 (Items_Xls.useParam[1]), 不收金币: WeaponGrow 全表 parNum 为空.
+function upgradeWeaponS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  materializeWeapons(s);
+  const oid = reqStr(req, 3);
+  const w = findWeapon(s, oid);
+  if (!w) return deny(`1202 无实例 "${oid}"`);
+  const list = reqHashList(req, 1);
+  if (!list.length) return deny(`1202 没带材料 ${oid}`);
+  const eff = newEffects();
+  const [gained, why] = payItemList(s, list, eff);
+  if (why) return deny(`1202 材料不足 ${why}`);
+  const cap = weaponMaxLv(w.cfg, w.breach);
+  const r = upgradeByExp(w.level, w.exp + gained, cap, (lv) => weaponLevelExp(grateOf(w.cfg), lv));
+  w.level = r.level;
+  w.exp = r.exp;
+  saveSave(s);
+  log("info", "weapon", `UpgrageWeapon ${oid} +${gained}exp -> lv${r.level}/${cap} exp=${r.exp} raised=${r.raised}`);
+  // 满级时 r.raised=0, 客户端比 aftLv > befLv 得 false -> 走 notice 605(已达上限)而不是成功窗,
+  // 所以这种情况照回不误: 回包是安全的, 只有"武器不存在/材料不足"才该 deny.
+  return {
+    body: pb.concat(
+      pb.bfield(1, weaponInfoFromInst(s, w)),
+      pb.bfield(2, rewardsBuf(list.map((it) => [it.key, it.value] as [number, number]))),
+      w.leaderId > 0 ? pb.bfield(3, leaderInfo(s, characterById(s, w.leaderId))) : null,
+    ),
+    pushes: [[CMD.DataPush, weaponDataPush(s, w, eff)]],
+  };
+}
+
+// 1204 DecomposeWeapon{ repeated weaponId=1(onlyId) } -> { repeated weaponId=1, rewards=2 }
+// 客户端 handler 只有 WeaponDataManager.DeleteWeapon(msg.weaponId) —— **不看 rewards**,
+// 所以返还必须另走 ShowItem_Push, 否则东西凭空消失. 回包只列真正删掉的 onlyId.
+function decomposeWeaponS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  materializeWeapons(s);
+  const del: SaveWeapon[] = [];
+  for (const oid of new Set(reqStrs(req, 1))) {
+    const w = findWeapon(s, oid);
+    if (!w || w.lock || w.leaderId > 0) continue; // 上锁/已装备: 客户端的仓库列表也筛掉
+    if (!num("Items", w.cfg, "saleReward", 0)) continue; // 没有出售定价组 = 不可分解
+    del.push(w);
+  }
+  if (!del.length) return deny(`1204 没有可分解的实例`);
+  const eff = newEffects();
+  const gains = new Map<number, number>();
+  const gain = (id: number, n: number): void => { if (n > 0) gains.set(id, (gains.get(id) ?? 0) + n); };
+  for (const w of del) {
+    for (const g of fixedRewardItems(s, num("Items", w.cfg, "saleReward", 0), eff)) gain(g.itemId, g.count);
+    // 强化/突破投进去的经验按比例折损返还 (仓库预览 UIWarehouse_SalePanel:90-100 同一套数).
+    const total = weaponTotalExp(w);
+    const per = Number(arr("Items", 1090001, "useParam")[0] || 0);
+    const expN = per > 0 ? Math.floor((total * num("Common", 20, "value3", 0)) / per) : 0;
+    if (expN > 0) { addItem(s, 1090001, expN, eff); gain(1090001, expN); }
+    const coin = Math.floor(total * num("Common", 10233, "value3", 0) * num("Common", 20, "value3", 0));
+    if (coin > 0) { addMoney(s, 10, coin, eff); gain(10, coin); }
+  }
+  s.weapons = s.weapons.filter((w) => !del.includes(w));
+  saveSave(s);
+  const rows = [...gains.entries()];
+  const rewards = rewardsBuf(rows);
+  log("info", "weapon", `DecomposeWeapon x${del.length} [${del.map((w) => w.onlyId).join(",")}] -> ${rows.map(([i, n]) => i + "×" + n).join(" ")}`);
+  // ShowItem_Push 在 HttpClientForLua.Ignore_Replenish_MsgID 里, 走 replenish 通道会被丢掉 ->
+  // 整条回复改走 completedList (与抽卡那一套相同).
+  return {
+    body: pb.concat(...del.map((w) => pb.sfield(1, w.onlyId)), rows.length ? pb.bfield(2, rewards) : null),
+    pushes: [[CMD.DataPush, weaponDataPush(s, null, eff)]],
+    extra: rows.length ? [[CMD.ShowItemPush, pb.concat(pb.vfield(1, 56), pb.bfield(2, rewards))]] : [],
+    mainInCompleted: true,
+  };
+}
+
+// 1205 ChangeWeaponLock{ required weaponId=1(onlyId); required state=2 } -> { weaponInfo=2 }
+// 回包字段号是 **2** 不是 1 (proto/WeaponProto.proto:93), 写错位客户端 UpdateData(nil) 就是"点了没反应".
+function changeWeaponLockS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  materializeWeapons(s);
+  const oid = reqStr(req, 1);
+  const state = reqNum(req, 2);
+  const w = findWeapon(s, oid);
+  if (!w || (state !== 0 && state !== 1)) return deny(`1205 锁状态 "${oid}" state=${state}`);
+  w.lock = state;
+  saveSave(s);
+  log("info", "weapon", `ChangeWeaponLock ${oid} -> ${state}`);
+  return pb.bfield(2, weaponInfoFromInst(s, w)); // 客户端只 UpdateData + 发事件, 不用再推 Data_Push
+}
+
+// 1207 UpgradeWeaponRefineLevel{ required weaponId=1; repeated consumeIds=2 } -> { weaponInfo=2, consumeWeaponIds=3 }
+// 精炼不收钱不收物: 90 把武器的 weaponRefineCos 全空、weaponRefineCosCoin 全是"0 个金币"(Consume 90000).
+// 每张同名卡按 (它的精炼等级 + 1) 计入 —— 客户端 GetAllSelectRefineLv:689 同式("0级当1级用").
+// consumeItemInfo=3 不读: 那条"非武装素材"分支在客户端 UIWeaponIntensify_RefineTabCtrl:610 是注释掉的.
+function upgradeWeaponRefineS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  materializeWeapons(s);
+  const oid = reqStr(req, 1);
+  const w = findWeapon(s, oid);
+  if (!w) return deny(`1207 无实例 "${oid}"`);
+  const max = maxRefineOf(w.cfg); // = TalentSkill 里该武技的最大 skillLevel-1; 无武技配置的武器回 0
+  if (w.refine >= max) return deny(`1207 ${max ? "已满炼" : "无精炼配置"} ${oid} ${w.refine}/${max}`);
+  const mats = [...new Set(reqStrs(req, 2))].filter((m) => m !== oid);
+  if (!mats.length) return deny(`1207 没喂卡 ${oid}`);
+  if (mats.length > 4) return deny(`1207 一次喂 ${mats.length} 张(客户端 selectMaxCount=4)`);
+  const cards: SaveWeapon[] = [];
+  for (const m of mats) {
+    const x = findWeapon(s, m);
+    // 素材要"同名 / 未装备 / 未上锁 / 不是默认式仗": 客户端的精炼列表就筛这些.
+    if (!x || x.cfg !== w.cfg || x.leaderId > 0 || x.lock || defLeaderOf(x) > 0) return deny(`1207 素材不合法 ${m}`);
+    cards.push(x);
+  }
+  const add = cards.reduce((a, x) => a + x.refine + 1, 0);
+  if (w.refine + add > max) return deny(`1207 超上限 ${w.refine}+${add}>${max}`);
+  w.refine += add;
+  s.weapons = s.weapons.filter((x) => !cards.includes(x));
+  saveSave(s);
+  log("info", "weapon", `UpgradeWeaponRefineLevel ${oid} -> ${w.refine}/${max} 吞卡 ${cards.length} 张`);
+  return {
+    body: pb.concat(
+      pb.bfield(2, weaponInfoFromInst(s, w)),
+      ...cards.map((x) => pb.sfield(3, x.onlyId)), // consumeWeaponIds: 客户端靠它把卡从仓库删掉
+    ),
+    pushes: [[CMD.DataPush, weaponDataPush(s, w, newEffects())]],
+  };
+}
+
+// 1208 RecastingWeapon{ required weaponId=1; repeated lockPropKeyIndex=2; repeated lockSkillId=3;
+//   required recastingType=4 } -> { required weaponInfo=1, required recastingType=2 }
+// 回包的 17 仍是**生效中的旧值**, 新结果只进 18 —— 确认页靠"17 与 18 同下标"左右对照画属性/技能.
+// lockPropKeyIndex 是 0 基下标(客户端送的是 index-1), lockSkillId 是 WeaponRandom.skillID.
+function recastingWeaponS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  materializeWeapons(s);
+  const oid = reqStr(req, 1);
+  const kind = reqNum(req, 4) ?? 0;
+  const w = findWeapon(s, oid);
+  if (!w) return deny(`1208 无实例 "${oid}"`);
+  if (kind !== RECAST_PROP && kind !== RECAST_SKILL) return deny(`1208 类型 ${kind}`);
+  const grate = grateOf(w.cfg);
+  // 客户端 CanRecasting 只放行 Common 99117.value4(=[4,5]) 里的星级. 3★以下连"锁定几个"都算不出来
+  // (GetWeaponRecastingLockCount 没有分支 -> nil 参与比较), 且确认页 GetScope 的 else 分支要读
+  // 对侧的 #weaponRandomSkill, 而 17 里"技能一条都没有"在线上是 nil —— 一律拒, 不造兜底数据.
+  if (!arr("Common", 99117, "value4").map(Number).includes(grate)) return deny(`1208 ${grate}★ 不可洗练 ${oid}`);
+  if (!randIsEmpty(w.last)) return deny(`1208 已有待确认 ${oid}`);
+  if (randIsEmpty(w.rand)) return deny(`1208 没有生效随机数据 ${oid}`);
+  const lockProp = reqNums(req, 2);
+  const lockSkill = reqNums(req, 3);
+  const locks = kind === RECAST_PROP ? lockProp : lockSkill; // 两个页签的锁定数各算各的, 不相加
+  if (locks.length > 4) return deny(`1208 锁定 ${locks.length} 个(WeaponRefiningLock 只有 1..4 档)`);
+  if (lockProp.some((i) => i < 0 || i >= w.rand.key.length)) return deny(`1208 属性下标越界 ${lockProp}`);
+  if (lockSkill.some((id) => !w.rand.skill.includes(id))) return deny(`1208 锁定的技能不在武装上 ${lockSkill}`);
+  const col = kind === RECAST_SKILL ? "consume" : "consume2";
+  const cids = [
+    num("WeaponRefining", grate, col, 0),
+    ...(locks.length ? [num("WeaponRefiningLock", locks.length, col, 0)] : []),
+  ].filter((cid) => cid > 0);
+  for (const cid of cids) {
+    const [ok, why] = checkConsume(s, cid);
+    if (!ok) return deny(`1208 消耗不足 ${why}`); // 一条都没扣: 半途扣钱不回包最难查
+  }
+  const eff = newEffects();
+  for (const cid of cids) payConsume(s, cid, eff);
+  const round = (kind === RECAST_SKILL ? w.recastingSkillTime : w.recastingTime) + 1;
+  const rolled = rollWeapon(w.cfg, seedOf(oid, round), w.rand, {
+    ...keepFor(w.rand, kind),
+    ...(kind === RECAST_SKILL ? { skill: lockSkill } : { propIdx: lockProp }),
+  });
+  const pend = pendingHalf(rolled, kind);
+  // 条数必须和 17 一模一样(池子太短摇不满就会少一条), 否则确认页按下标取到 nil.
+  const aligned = kind === RECAST_SKILL ? pend.skill.length === w.rand.skill.length : pend.key.length === w.rand.key.length;
+  if (!aligned) return deny(`1208 摇出的条数对不上 ${oid}`);
+  w.last = pend;
+  if (kind === RECAST_SKILL) w.recastingSkillTime = round;
+  else w.recastingTime = round;
+  saveSave(s);
+  log("info", "weapon", `RecastingWeapon ${oid} ${kind === RECAST_SKILL ? "SKILL" : "PROP"} 锁${locks.length} 第${round}次`);
+  return {
+    body: pb.concat(pb.bfield(1, weaponInfoFromInst(s, w)), pb.vfield(2, kind)),
+    pushes: [[CMD.DataPush, weaponDataPush(s, w, eff)]],
+  };
+}
+
+// 1209 SelectWeaponRandomInfo{ required weaponId=1; required recastingType=2; required selectType=3 }
+// -> 同样三个 required 字段. NEW(2) 把 18 并进 17 再清 18; OLD(1) 只清 18.
+function selectWeaponRandomS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  materializeWeapons(s);
+  const oid = reqStr(req, 1);
+  const kind = reqNum(req, 2) ?? 0;
+  const sel = reqNum(req, 3) ?? 0;
+  const w = findWeapon(s, oid);
+  if (!w) return deny(`1209 无实例 "${oid}"`);
+  if (randIsEmpty(w.last)) return deny(`1209 没有待确认 ${oid}`);
+  const pending = w.last.skill.length ? RECAST_SKILL : RECAST_PROP; // 与 lastBufFor 同一套判据
+  if (kind !== pending) return deny(`1209 类型不符 ${oid} 请求=${kind} 待确认=${pending}`);
+  if (sel !== SELECT_NEW && sel !== SELECT_OLD) return deny(`1209 选择类型 ${sel}`);
+  if (sel === SELECT_NEW) {
+    const next = applyPending(w.rand, w.last, kind);
+    if (next.key.length !== w.rand.key.length || next.skill.length !== w.rand.skill.length) return deny(`1209 条数不齐 ${oid}`);
+    w.rand = next;
+  }
+  w.last = emptyRand();
+  saveSave(s);
+  log("info", "weapon", `SelectWeaponRandomInfo ${oid} ${pending === RECAST_SKILL ? "SKILL" : "PROP"} ${sel === SELECT_NEW ? "保留新" : "保留旧"}`);
+  return {
+    body: pb.concat(pb.bfield(1, weaponInfoFromInst(s, w)), pb.vfield(2, kind), pb.vfield(3, sel)),
+    pushes: [[CMD.DataPush, weaponDataPush(s, w, newEffects())]],
+  };
 }
 
 // GetPayShopData{ required version=1; required update=2 } -> GetPayShopData_S2C{ required PayShopData=1 }.
@@ -1329,6 +1641,14 @@ export const HANDLERS: Record<number, GsBuilder> = {
   [CMD.ChangeStickSkill]: changeStickSkillS2C,
   [CMD.ResetStickSkill]: resetStickSkillS2C,
   [CMD.SwitchWeapon]: switchWeaponS2C,
+  // 武装 (B2). weaponInfo 的字段号两条不一样: 1205/1207 在 **2**, 1201/1202/1208/1209 在 1.
+  [CMD.UpgrageWeaponBreach]: upgradeWeaponBreachS2C,
+  [CMD.UpgrageWeapon]: upgradeWeaponS2C,
+  [CMD.DecomposeWeapon]: decomposeWeaponS2C,
+  [CMD.ChangeWeaponLock]: changeWeaponLockS2C,
+  [CMD.UpgradeWeaponRefineLevel]: upgradeWeaponRefineS2C,
+  [CMD.RecastingWeapon]: recastingWeaponS2C,
+  [CMD.SelectWeaponRandomInfo]: selectWeaponRandomS2C,
   [CMD.GetPayShopData]: getPayShopDataS2C,
   // 战斗: 11028 进战斗(核心), 11003 战斗服 KCP 登录, 11018/11019/11031/11032 结算与离开
   [CMD.StartSoloBattle]: startSoloBattleS2C,
