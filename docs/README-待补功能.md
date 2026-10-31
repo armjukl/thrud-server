@@ -50,7 +50,8 @@
 
 - `characters[].attrs`（属性id→值）可**直接覆盖**终值（hp=100/atk=101/def=102/en=103/crit=104/击破=305/暴击率=201/暴击伤害=200）。
 - 默认属性按 `level/breach + 武器` 用客户端 `Attribute/GrowAttribute/LeaderBreak/WeaponBreak` 表算（[`src/attrs.ts`](../src/attrs.ts)）；
-  战力 `heroPower` 未计入**星级战力**、未叠加**属性百分比**。
+  武装侧按客户端注释的公式分段累计（各突 `growAttributeID` × 本突那几级 + 各突 `growAddAttributeID`），
+  `heroPower` 吃的是角色**成长后**属性与穿戴武装的**真实等级/突破**。仍未计入**星级战力**、未叠加**属性百分比**。
 
 ---
 

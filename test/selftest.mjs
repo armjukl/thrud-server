@@ -1068,6 +1068,91 @@ await check('B1 养成面板的被动集合取自 Leader 表而非武器表', as
   } finally { restore(); }
 });
 
+// 具相面板按 HeroData:GetActiveSkill(type) 取技能, 养成侧只认 1=主动 / 2=极奏 (普攻由客户端从
+// talentSkills 里挑 commonSkillId[1] 合成). 武器射击技能混进 activeSkills 时: 它在 SkillValue 里只有
+// 1 级且 consumeId=0 -> 下一级配置取不到, 潜能觉醒按钮永不出现(1008 也就发不出来); 红点判据又拿
+// consumeId=0 去 index Consume 表 -> Lua 报错, 面板整个卡死. 真机上就是"满级点具相卡住".
+await check('B1 具相面板 activeSkills 只有 主动(type=1)/极奏(type=2) 两条', async () => {
+  const { LEADER } = await import('../dist/data/leader.js');
+  const { WEAPON } = await import('../dist/data/weapon.js');
+  const act = LEADER[LID][1], jizou = LEADER[LID][2];
+  const shooting = WEAPON[LEADER[LID][0]][0];
+  const restore = useSave(trainSave((s, c) => { c.breach = 4; }));
+  try {
+    const { HANDLERS } = await import('../dist/payloads.js');
+    const res = HANDLERS[10002]({ msgId: 10002, packetUUid: 1, proto: Buffer.alloc(0), headerHex: '' });
+    const body = Buffer.isBuffer(res) ? res : res.body;
+    const li = GProto.decodeFields(body).filter((f) => f.field === 4)
+      .map((f) => GProto.decodeFields(f.value))
+      .find((x) => Number(x.find((k) => k.field === 1)?.value) === LID);
+    assert.ok(li, 'PlayerLoginGetInfo 里没有这个角色的 LeaderInfo');
+    const slots = li.filter((f) => f.field === 17)
+      .map((f) => GProto.decodeFields(f.value))
+      .map((k) => ({
+        id: Number(k.find((x) => x.field === 1)?.value),
+        level: Number(k.find((x) => x.field === 2)?.value),
+        type: Number(k.find((x) => x.field === 3)?.value),
+      }));
+    assert.equal(slots.length, 2, `activeSkills 只能两条(主动/极奏), 实得 ${JSON.stringify(slots)}`);
+    assert.deepEqual(slots.map((s) => [s.type, s.id]), [[1, act], [2, jizou]], 'type 与技能 id 的配对不能移位');
+    assert.ok(!slots.some((s) => s.id === shooting), `武器射击技能 ${shooting} 不该出现在 activeSkills 里`);
+    assert.ok(!slots.some((s) => s.type === 3), 'type=3(QTE/支援) 是战斗侧口径, 养成侧没人读');
+  } finally { restore(); }
+});
+
+// 百分比属性在 Attribute 表里存的是**小数**(0.02 = 暴击率 2%, 0.4 = 暴击伤害 40%), 跟着 hp/atk 一起
+// 取整会全归 0 —— 真机上表现为"式仗的暴击伤害/暴击率永远是 0". 全表 542 行里这两列的非零值没有一行是整数.
+await check('attrs: 暴击率(201)/暴击伤害(200) 保持小数, 其余属性仍取整', async () => {
+  const A = await import('../dist/attrs.js');
+  const w = A.weaponAttr(5051030, 1, 0);
+  assert.equal(w.get(201), 0.02, '武装暴击率 0.02 被取整成 0');
+  assert.equal(w.get(200), 0.4, '武装暴击伤害 0.4 被取整成 0');
+  assert.equal(w.get(101), 120, '攻击这类整数属性仍要取整');
+  const merged = Object.fromEntries(A.heroAttrMap(2027001, 1, 0, 5051030, 1, 0));
+  assert.equal(merged[201], 0.07, `角色 0.05 + 武装 0.02 合并要清掉浮点尾差, 实得 ${merged[201]}`);
+  assert.ok(Number.isInteger(merged[102]), '防御仍取整');
+
+  // 端到端: 值经 dblfield 上线后仍是小数(客户端按 attributeMap 画面板与战斗数值).
+  const restore = useSave(trainSave((s, c) => { c.breach = 4; }));
+  try {
+    const { HANDLERS } = await import('../dist/payloads.js');
+    const res = HANDLERS[10002]({ msgId: 10002, packetUUid: 1, proto: Buffer.alloc(0), headerHex: '' });
+    const body = Buffer.isBuffer(res) ? res : res.body;
+    const li = GProto.decodeFields(body).filter((f) => f.field === 4)
+      .map((f) => GProto.decodeFields(f.value))
+      .find((x) => Number(x.find((k) => k.field === 1)?.value) === LID);
+    const prop = GProto.decodeFields(li.find((f) => f.field === 10).value);
+    const map = Object.fromEntries(prop.filter((f) => f.field === 1)
+      .map((f) => GProto.decodeFields(f.value))
+      .map((e) => [Number(e.find((k) => k.field === 1)?.value), e.find((k) => k.field === 2)?.value.readDoubleLE(0)]));
+    assert.ok(map[201] > 0 && map[201] < 1, `回包 attributeMap[201] 应是 (0,1) 的小数, 实得 ${map[201]}`);
+    assert.ok(map[200] > 0 && map[200] < 1, `回包 attributeMap[200] 应是 (0,1) 的小数, 实得 ${map[200]}`);
+  } finally { restore(); }
+});
+
+// 客户端自己写着的武装属性公式(8c78c6be:1069): 基础 + Σ各突等级属性×本突那几级 + Σ各突突破属性.
+// 早先 weaponAttr 只有"当前突的成长行 ×(等级-1)", 且**完全没读 growAddAttributeID** -> 突破白送的那一坨
+// (5★ 突1 = +114 攻/+2%暴击率/+2.5%暴伤)凭空消失, 真机上就是"升级突破属性不动".
+await check('attrs: 武装等级成长分段累计 + 突破附加属性都算进终值', async () => {
+  const A = await import('../dist/attrs.js');
+  const atk = (lv, br) => A.weaponAttr(5151010, lv, br).get(101);
+  assert.equal(atk(1, 0), 120, '1 级 0 突 = 基础行');
+  assert.equal(atk(20, 0), 296, '本突 20 级: 120 + 9.26316*19');
+  assert.equal(atk(40, 1), 597, '分段: 120 + 9.26316*19 + 9.35*20 + 突破附加 114');
+  assert.equal(atk(50, 2), 838, '两突的附加属性要累加(114+136.8), 每突按各自成长行(9.26/9.35/10.45)计');
+  assert.equal(atk(80, 2), atk(50, 2), '等级超本突上限(2 突 cap=50)要夹住, 不能继续涨');
+  assert.ok(atk(21, 1) > atk(20, 0), '突破本身就该让属性跳一截');
+  const crit = A.weaponAttr(5151010, 40, 1);
+  assert.equal(crit.get(201), 0.04, '暴击率随突破加 0.02(小数, 不能被取整吃掉)');
+  assert.equal(crit.get(200), 0.425, '暴击伤害随突破加 0.025');
+  // 强化/突破回包里那把武装真的带着新数值(面板与战力同源).
+  const w = A.weaponPower(5151010, 40, 1);
+  assert.ok(w > A.weaponPower(5151010, 1, 0), '武装战力要随等级/突破涨');
+  const p = (lv, wl, wb) => A.heroPower(2001001, lv, 3, 5151010, wl, wb);
+  assert.ok(p(60, 1, 0) > p(1, 1, 0), '角色战力要随**角色等级**涨(早先只读基础行)');
+  assert.ok(p(60, 40, 1) > p(60, 1, 0), '角色战力要随穿戴武装的等级/突破涨');
+});
+
 // ---------------------------------------------------------------- 4i. deny 的**帧级**行为 (gs.ts)
 // checkHandler 直调 HANDLERS, 而"拒单"是 gs.ts 装配回包时的一个分支 —— 不端到端过一遍
 // handleAppInterface, 自检对"header=0 空包到底成不成帧、有没有误伤正常包"是盲的。

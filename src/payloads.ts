@@ -364,9 +364,6 @@ function weaponAttrsOf(w: SaveWeapon): AttrKV {
 function leaderInfo(s: SaveData, c: SaveCharacter): Buffer {
   const w = equippedWeaponOf(s, c.id);
   const lm = LEADER[c.id];
-  const wm = WEAPON[w.cfg];
-  const shooting = wm ? wm[0] : 0;
-  const weaponSkills = wm ? wm[1] : [];
   // 式杖槽 stickSkills=23: key=槽Id, value=LeaderWandSkill 表id (Change/ResetStickSkill 落进 c.stick).
   const stickSlots = Object.entries(c.stick)
     .filter(([, sid]) => sid > 0)
@@ -387,14 +384,18 @@ function leaderInfo(s: SaveData, c: SaveCharacter): Buffer {
     pb.vfield(7, c.favorabilityExp),   // favorabilityExp
     pb.vfield(8, c.clothingId), // clothingId
     pb.sfield(9, w.onlyId),     // weaponId = 穿戴式仗的 onlyId (required string)
-    pb.bfield(10, battlePropModelInfo(heroPower(c.id, c.level, c.breach, w.cfg), heroAttrs(s, c))), // calcPropModelInfo
+    pb.bfield(10, battlePropModelInfo(heroPower(c.id, c.level, c.breach, w.cfg, w.level, w.breach), heroAttrs(s, c))), // calcPropModelInfo
     ...talentIdsOf(c.id).map((id) => pb.bfield(11, talentSkill(id, skillLv(c, id, "talent")))), // talentSkills=11
     pb.vfield(12, c.breach),    // breachLevel=12 (缺则 LeaderAttrChangedHandler 误判去开突破界面)
+    // activeSkills=17 只列 主动/极奏 两条, type 按**养成侧**口径 (HeroData:GetActiveSkill:
+    // 1=主动 2=极奏 5=普攻). 普攻不在这里, 客户端从 talentSkills 里挑 commonSkillId[1];
+    // 武器射击技能也不能塞进来: 它 SkillValue 只有 1 级且 consumeId=0, 具相面板拿它去
+    // GetActiveSkillConfigByLv/CheckConsume(0), 按钮永不出现且点一下就报错(18668a5e:709,
+    // 2425131b:232 -> c4077e8d:205). 战斗侧的 type 1/2/3 是另一套, 见 leaderBattleInfo.
     ...(lm
       ? [
-          pb.bfield(17, activeSkill(shooting, skillLv(c, shooting, "active"), 1)), // activeSkills=17 武器射击
-          pb.bfield(17, activeSkill(lm[1], skillLv(c, lm[1], "active"), 2)),       // 主动
-          pb.bfield(17, activeSkill(lm[2], skillLv(c, lm[2], "active"), 3)),       // 极奏
+          ...(lm[1] > 0 ? [pb.bfield(17, activeSkill(lm[1], skillLv(c, lm[1], "active"), 1))] : []), // 主动
+          ...(lm[2] > 0 ? [pb.bfield(17, activeSkill(lm[2], skillLv(c, lm[2], "active"), 2))] : []), // 极奏
         ]
       : []),
     pb.vfield(22, c.signLv),    // signLv (required)
@@ -830,7 +831,7 @@ function leaderBattleInfo(s: SaveData, c: SaveCharacter): Buffer {
     pb.vfield(7, c.favorabilityExp),
     pb.vfield(8, c.clothingId),
     pb.bfield(9, weaponInfoFromInst(s, w)), // weapon
-    pb.bfield(10, battlePropModelInfo(heroPower(c.id, c.level, c.breach, w.cfg), heroAttrs(s, c))), // calcPropModelInfo
+    pb.bfield(10, battlePropModelInfo(heroPower(c.id, c.level, c.breach, w.cfg, w.level, w.breach), heroAttrs(s, c))), // calcPropModelInfo
     ...weaponSkills.map((id) => pb.bfield(11, talentSkill(id, skillLv(c, id, "talent")))), // talentSkills
     ...(lm
       ? [
@@ -840,7 +841,7 @@ function leaderBattleInfo(s: SaveData, c: SaveCharacter): Buffer {
         ]
       : []),
     pb.vfield(14, c.signLv),  // signLv
-    pb.dblfield(16, heroPower(c.id, c.level, c.breach, w.cfg)), // capability
+    pb.dblfield(16, heroPower(c.id, c.level, c.breach, w.cfg, w.level, w.breach)), // capability
   );
 }
 
