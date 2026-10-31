@@ -1,10 +1,10 @@
 # 斯露德（Thrud / sld）离线假服务端 · 当前方案
 
-> **最后更新：2026-10-28** ｜ 老文档（含 PROJECT-LOG、frida 进展、1.0.6 静态分析）见 [`docs/old/`](old/)
+> **最后更新：2026-10-31** ｜ 老文档（含 PROJECT-LOG、frida 进展、1.0.6 静态分析）见 [`docs/old/`](old/)
 
 本文只写**现在真正在用**的口径。历史推演过程不在这里，去 `docs/old/PROJECT-LOG.md`（已归档，结论可能过时）。
 
-专题文档：[协议清单](README-协议清单.md) · [待补功能](README-待补功能.md) · [资源指引](README-资源指引.md) · [存档修改](README-存档修改.md) · [frida 抓包](README-frida抓包.md) · [注入器 gadget](README-注入器gadget.md) · [战斗移动轴与高度解锁](README-战斗移动轴与高度解锁.md) · [改包签名校验](README-改包签名校验.md) · [改Lua脚本](README-改Lua脚本.md) · 路 B 到头：只靠 hook 的本地化（[`../../frida-gadget/README.md`](../../frida-gadget/README.md)，复刻 PC 纪念版）
+专题文档：[功能对比与现状](README-功能对比.md) · [协议清单](README-协议清单.md) · [待补功能](README-待补功能.md) · [资源指引](README-资源指引.md) · [存档修改](README-存档修改.md) · [frida 抓包](README-frida抓包.md) · [注入器 gadget](README-注入器gadget.md) · [战斗移动轴与高度解锁](README-战斗移动轴与高度解锁.md) · [改包签名校验](README-改包签名校验.md) · [改Lua脚本](README-改Lua脚本.md) · 路 B 到头：只靠 hook 的本地化（[`../../frida-gadget/README.md`](../../frida-gadget/README.md)，复刻 PC 纪念版）
 
 ---
 
