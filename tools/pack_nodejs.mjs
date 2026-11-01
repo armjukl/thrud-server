@@ -26,6 +26,8 @@ const opt = (name, dflt) => {
 const flag = (name) => args.includes("--" + name);
 
 const ASSETS = path.resolve(opt("out", path.join(ROOT, "android", "app", "src", "main", "assets")));
+// --main 让同一套产物布局服务两种入口: 真壳用 android/main.js, 探针 APK 用 android/probe.js
+const MAIN = path.resolve(opt("main", path.join(ROOT, "android", "main.js")));
 /** 相对 DATA 的必需铺盘清单; 少一个就意味着假服起来缺东西 */
 const SEED_FILES = ["data/save.json", "data/header-rule.json", "data/frame_prefix.txt", "data/skipapi.json", "data/getclientupdatedata.json"];
 /** 永不进包: 运行时自己长出来的、上一版留下的、原子写的中间文件 */
@@ -112,7 +114,7 @@ if (flag("check")) {
   fs.rmSync(codeDir, { recursive: true, force: true }); // 代码目录整目录换 = 手机上"APK 更新覆盖"的语义
   fs.rmSync(seedDir, { recursive: true, force: true });
   let codeN = copyTree(distCjs, codeDir);
-  fs.copyFileSync(path.join(ROOT, "android", "main.js"), path.join(codeDir, "main.js"));
+  fs.copyFileSync(MAIN, path.join(codeDir, "main.js"));
   // 带 name 的 package.json: findRoot() 从 code 目录往上找的就是它; 少 name 会一路找到天上去
   fs.writeFileSync(path.join(codeDir, "package.json"), JSON.stringify({ name: "sld-offline-server", version: bc, type: "commonjs" }, null, 2) + "\n");
   codeN += 2; // main.js + package.json
