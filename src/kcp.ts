@@ -10,6 +10,9 @@
 //   +16 una   u32   已确认序号
 //   +20 len   u32   数据长度
 // 依据: metadata 中的 kcp2k 程序集 + KcpClient/KcpServer/KcpConnection/KcpTransport 等类型名.
+//
+// 事件面用 node:events 而非 EventTarget/CustomEvent: CustomEvent 全局在 Node 18(含 nodejs-mobile)上不存在.
+import EventEmitter from "node:events";
 
 export const CMD = {
   PUSH: 81,
@@ -105,7 +108,7 @@ interface PendingItem {
   tries: number;
 }
 
-export class KcpSession extends EventTarget {
+export class KcpSession extends EventEmitter {
   conv: number;
   mtu: number;
   mss: number;
@@ -141,7 +144,7 @@ export class KcpSession extends EventTarget {
   input(packet: Buffer): number {
     const { segments, rest } = decodePacket(packet);
     for (const seg of segments) this.#handle(seg);
-    if (rest.length) this.dispatchEvent(new CustomEvent("garbage", { detail: { bytes: rest } }));
+    if (rest.length) this.emit("garbage", { bytes: rest });
     return segments.length;
   }
 
@@ -160,14 +163,14 @@ export class KcpSession extends EventTarget {
       this.#drain();
       return this.#ack(seg);
     }
-    this.dispatchEvent(new CustomEvent("control", { detail: seg }));
+    this.emit("control", seg);
   }
 
   #drain(): void {
     while (this.rcvBuf.has(this.rcvNxt)) {
       const data = this.rcvBuf.get(this.rcvNxt++)!;
       this.rcvBuf.delete(this.rcvNxt - 1);
-      if (data.length) this.dispatchEvent(new CustomEvent("data", { detail: data }));
+      if (data.length) this.emit("data", data);
     }
   }
 

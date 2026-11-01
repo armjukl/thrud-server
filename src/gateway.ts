@@ -105,9 +105,8 @@ export class Peer {
         rcvWnd: config.kcp.rcvWnd,
         output: (buf) => this.write(buf),
       });
-      this.session.addEventListener("data", (e) => this.#stream((e as CustomEvent<Buffer>).detail));
-      this.session.addEventListener("control", (e) => {
-        const seg = (e as CustomEvent<KcpSegment>).detail;
+      this.session.on("data", (data: Buffer) => this.#stream(data));
+      this.session.on("control", (seg: KcpSegment) => {
         hooks.control.forEach((f) => f(this, seg));
         record.packet(`${this.tag()}-kcp-cmd${seg.cmd}`, seg.data,
           `KCP 控制命令 cmd=${seg.cmd} sn=${seg.sn} —— 握手 conv/cookie 规则待抓包确认`);

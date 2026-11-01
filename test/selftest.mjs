@@ -6,8 +6,10 @@ import dgram from 'node:dgram';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(import.meta.dirname, '..');
+// import.meta.dirname 要 Node 20.11+; 自检也得能在 Node 18(与 nodejs-mobile 同版本)上跑, 故用 URL 解。
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PY_CANDIDATES = [process.env.SLD_PY, '/home/tmp/venv/bin/python', 'python3'].filter(Boolean);
 const py = PY_CANDIDATES.find((p) => (p.includes('/') ? fs.existsSync(p) : true)) || 'python3';
 
@@ -81,7 +83,7 @@ await check('KcpSession 分片按序交付 + 主动回 ACK', async () => {
   const out = [];
   const s = new KcpSession(9, { mtu: 64, output: (b) => out.push(b) });
   const got = [];
-  s.addEventListener('data', (e) => got.push(e.detail.toString()));
+  s.on('data', (buf) => got.push(buf.toString()));
   s.input(encodeSegment({ conv: 9, cmd: CMD.PUSH, frg: 0, wnd: 32, ts: 0, sn: 1, una: 0, data: Buffer.from('B') }));
   s.input(encodeSegment({ conv: 9, cmd: CMD.PUSH, frg: 0, wnd: 32, ts: 1, sn: 0, una: 0, data: Buffer.from('A') }));
   assert.deepEqual(got, ['A', 'B'], '乱序包必须按 sn 重排');
@@ -90,6 +92,11 @@ await check('KcpSession 分片按序交付 + 主动回 ACK', async () => {
   assert.equal(acks[0].una, 0, 'sn=1 先到时不可交付, una 仍为 0');
   assert.equal(acks[1].una, 2, 'sn=0 补齐后 una 应推进到 2');
   assert.deepEqual(acks.map((a) => a.sn), [1, 0], 'ACK 的 sn 回显被确认的段');
+  const ctrl = [];
+  s.on('control', (seg) => ctrl.push(seg.cmd));
+  // CTRL_PING 是静默回 MSG_PING 的, 不落事件面; 未收录的命令(CTRL_STAT)才走 control
+  s.input(encodeSegment({ conv: 9, cmd: CMD.CTRL_STAT, frg: 0, wnd: 32, ts: 2, sn: 2, una: 0, data: Buffer.alloc(0) }));
+  assert.deepEqual(ctrl, [CMD.CTRL_STAT], 'data/control 都走 EventEmitter, 事件面不能漏');
   s.close();
 });
 
