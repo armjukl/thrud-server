@@ -592,6 +592,87 @@ await check('android: 壳的接线(JNI 符号 / loadLibrary 名 / argv 标志 / 
   assert.ok(!nsc.includes('0.0.0.0'), '不许把明文放到整个网面上');
 });
 
+// 非 root 绑不了 443, 全靠 gadget 在 connect()/getaddrinfo 里就地改 sockaddr 端口。
+// 这段字节运算错了不会有任何报错, 只会"客户端连 443 连不上", 所以把纯函数圈出来抽进 node 断言。
+await check('gadget: sockaddr 端口改写(443->9443)字节对且改出来的端口真能连上', async () => {
+  const src = readFile(path.join(ROOT, 'frida', 'hook_redirect_trust.js')).toString('utf8');
+  assert.match(src, /^var MODE = 'tunnel';$/m, "默认模式必须是 tunnel: 推上去就把用户的隧道流程换了");
+  assert.match(src, /MODE === 'local' \? \{ ip: LOCAL_IP, from: 443, to: 9443 \} : null/, 'local 模式的规则要写成 443->9443 且只认 127.0.0.1');
+  assert.match(src, /patchSa\(a\[1\], a\[2\]\.toInt32\(\), 'connect'\)/, "connect() 里要真改写(先验 addrlen 再动)");
+  assert.match(src, /patchSa\(ai\.add\(AI_ADDR_OFF\)\.readPointer\(\)/, 'getaddrinfo 的结果链也要改: KCP 走 UDP 时用 sendto, 根本不经过 connect()');
+
+  // 手机上真正跑的是 hook_gadget_all.js 生成的变体, 不是这份文件; "两段是原样复制的"这句话
+  // 之前只写在文档里靠人记得去 cmp —— 改一处忘一处就变成"隧道能用、本地那套悄悄失效"。
+  const seam = (t, name) => {
+    const i = t.indexOf("emit('combined-loaded'");
+    assert.ok(i > 0, `${name} 里找不到 combined-loaded 那行, 共享块的分界变了, 这条断言要跟着改`);
+    return t.slice(0, t.indexOf('\n', i) + 1);
+  };
+  const gad = readFile(path.join(ROOT, 'frida', 'hook_gadget_all.js')).toString('utf8');
+  assert.equal(seam(gad, 'hook_gadget_all.js'), seam(src, 'hook_redirect_trust.js'), 'gadget 真源的 redirect/trust 段必须逐字节等于 hook_redirect_trust.js');
+  // MODE 本身是 make_variants.sh 会 sed 的旋钮, 比"有没有漂移"时得把它挖掉
+  const seamKnobFree = (t) => seam(t).replace(/^var MODE = '(?:tunnel|local)';$/m, 'var MODE = <旋钮>;');
+  for (const [file, mode] of [['hook_gadget_pool_zaxis_skip.js', 'tunnel'], ['hook_gadget_local_pool_zaxis_skip.js', 'local']]) {
+    const v = readFile(path.join(ROOT, 'frida', file)).toString('utf8');
+    assert.equal(seamKnobFree(v), seamKnobFree(gad), `${file} 是 make_variants.sh 生成的, 和基线漂移就说明忘了重生成`);
+    assert.match(v, new RegExp(`^var MODE = '${mode}';$`, 'm'), `${file} 的 MODE 应当是 ${mode}`);
+    if (mode === 'local') assert.match(v, /SA_RULE = MODE === 'local' \? \{ ip: LOCAL_IP, from: 443, to: 9443 \}/, '本地那份要带着 443->9443 的规则');
+  }
+
+  const block = (src.match(/\/\* SLD_SA_START \*\/([\s\S]*?)\/\* SLD_SA_END \*\//) || [])[1];
+  assert.ok(block, 'frida 脚本里要有 SLD_SA_START/SLD_SA_END 圈出的纯字节函数(这条自检抽的就是它)');
+  assert.ok(!/Memory\.|readU8|\.add\(|Process\./.test(block), '圈出来的函数只能做字节运算, 碰了 Frida API 这段断言就成了假的');
+  // 在空上下文里跑这段: 段内不许 require/process/宿主全局, 万一源文件被改坏也伤不到自检进程
+  const vm = await import('node:vm');
+  const f = vm.runInNewContext(block + '\n({ sldPatchSaPort, sldSaV4 })', vm.createContext({}));
+  const mk = (ip, port, fam) => {
+    const b = new Uint8Array(16);
+    b[0] = (fam || 2) & 0xff;
+    b[2] = (port >> 8) & 0xff; // sin_port 是网络序(大端)
+    b[3] = port & 0xff;
+    ip.split('.').forEach((x, i) => { b[4 + i] = Number(x); });
+    return b;
+  };
+  const rule = { ip: '127.0.0.1', from: 443, to: 9443 };
+
+  const sa = mk('127.0.0.1', 443);
+  assert.equal(f.sldSaV4(sa), '127.0.0.1:443', 'sockaddr_in 的读法: family@0 小端, port@2 大端, addr@4');
+  assert.equal(f.sldPatchSaPort(sa, rule), 1);
+  assert.deepEqual([sa[2], sa[3]], [0x24, 0xe3], '9443=0x24E3, 网络序要写成 24 E3');
+  assert.equal(f.sldSaV4(sa), '127.0.0.1:9443');
+
+  // 不该动的一个都不许动
+  const untouched = [
+    [mk('127.0.0.1', 8080), rule, '端口不是 from'],
+    [mk('<YOUR_SERVER_IP>', 443), rule, 'IP 不是我们的'],
+    [mk('127.0.0.1', 443, 10), rule, 'AF_INET6 不碰'],
+    [mk('127.0.0.1', 443), null, 'tunnel 模式规则是 null'],
+  ];
+  for (const [b, r, why] of untouched) {
+    const before = Buffer.from(b).toString('hex');
+    assert.equal(f.sldPatchSaPort(b, r), 0, why + ' 时不该改');
+    assert.equal(Buffer.from(b).toString('hex'), before, why + ' 却不许把字节写脏');
+  }
+  assert.equal(f.sldPatchSaPort(new Uint8Array(15), rule), 0, '不足一个 sockaddr_in 就返回, 别越界');
+
+  // 真连一次: 从改写后的字节里读回端口去 connect —— 字节序写反了这一步就挂
+  const net = await import('node:net');
+  const server = net.createServer();
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const ephemeral = server.address().port;
+  const live = mk('127.0.0.1', 443);
+  assert.equal(f.sldPatchSaPort(live, { ip: '127.0.0.1', from: 443, to: ephemeral }), 1);
+  const decoded = Number(f.sldSaV4(live).split(':')[1]);
+  assert.equal(decoded, ephemeral, '解出来的端口要和真正在听的端口一致');
+  const sock = net.connect(decoded, '127.0.0.1');
+  try {
+    await new Promise((res, rej) => { sock.once('connect', res); sock.once('error', rej); });
+  } finally {
+    sock.destroy();
+    server.close();
+  }
+});
+
 // ---------------------------------------------------------------- 4. HTTP 桩
 await check('HTTP 桩: 服务器列表/版本/登录/公告/未实现端点', async () => {
   const { server } = createHttpServer();
