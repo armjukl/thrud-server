@@ -118,7 +118,12 @@ Lua `HttpClientForLua` 先派发 `completedList` 再派发 `replenishList`，且
 | 10076 · 10077 · 10080 | CheckPlayerName · ChangePlayerName · ChangeSex | ✅ | 改名/改性别落 `data/save.json` |
 | 10100 | ClientDataOverLogin | ✅ 空 | |
 | 10102 | GetOpenFunctionData | ✅ | 一次下发全部 conditionSet |
-| 3304 | SetSpecialTaskProgress | ✅ errCode=0 | |
+| 3302 | GetActivePointReward | ✅ 真发奖 | **B5**：领日常活跃宝箱，按 `TaskDailyActive[dayConditionId==当前日常组].apNum` 比对 `dayTaskPoint`（`econ.rewardById` 真发）→ 格记进 `tasks.passedDayPoints`；回包 `reward=1`（客户端不读）+ **只列本次新领的** `activePointId=2`（客户端把它 `append` 进 `passedDayPoints`，全量重发会重复计入）。一键请求会把所有达标未领的 id 一起发来，逐条判 |
+| 3303 | SubmitTask | ✅ 真发奖 | 单条领任务：先过可见性 + 进度门槛，再 `rewardById(fixedRewardId)` 真发、写 `passedTasks[taskId]=秒`、按 `Task.activityPoint` 累加 `dayTaskPoint`/`weekTaskPoint`；回 `reward=1`（客户端**不读**）/ `dayTaskPoint=2` / `chapterIndex=3` / `overTask=4` / `weekTaskPoint=5`。章节奖也走这条（`claimTask` 判本组全清）。不达标 → 拒单 |
+| 3304 | SetSpecialTaskProgress | ✅ 真计数 | 前端上报型进度（`type=1`/`num=2`）：`type==3000`（定时登录）由我们自己分 40000/40001 两档（上报里不带档位），其余 `bumpTask(s, type, num)` 照报来的次数记。`type=0` → 拒单；其余一律 `errCode=0`（回非 0 会让客户端弹错误框） |
+| 3308 | BatchSubmitTask | ✅ 真发奖 | 一键领取（`type` 1日/2主线/3周/4活动）：逐个走 `claimTask`，**跳掉不达标的**；一条都没领到才拒单。回 `dayTaskPoint=1` / `chapterIndex=2` / `overTask=3`（`repeated ProtoHashInt2Int`，3303 是单个）/ `weekTaskPoint=4`（**与 3303 的 5 同名字不同号**，proto 自检有断言） |
+| 3309 | GetWeekActivePointReward | ✅ 真发奖 | 周活跃宝箱，同 3302 但取 `TaskDailyActive` 里 `dayConditionId==0` 的那五格（id 26..30）、门槛是 `weekTaskPoint`、格记进 `tasks.passedWeekPoints`；`GetWeekActivePointReward_S2C` **只有 `id=1`、没有 rewards** → 奖励必须另走 `ShowItem_Push`（§4.6） |
+| 900007 | TaskProgressPush | 推送 | 任务进度增量推送（`taskProgress` 同形状）。被动计数（通关、消费、抽卡……）不会有人记得发，所以挂在 `HANDLERS` 出口统一带：`withTaskPush` 包装每条 handler，见 §4.6 |
 | 30304 | GetPayShopDataAfterLogin | ✅ | payConfVersion=1 |
 | 40002 | GetWaitOrderData | ✅ 空 | |
 | 60003 | GetPerkInfoListPage | ✅ 空表 | page/next |
@@ -325,6 +330,57 @@ GS 帧的拼法留在 `payloads.ts`。口径全从客户端 Lua 反推（`HangUp
 
 **B4 有意没做的事**：不校验"今日进本次数用完"（`todayAttackNum` 只累加）、不发 `leaderExpReward`、
 不给首通/三星奖励、扫荡不查扫荡券、加速不扣道具。
+
+### 4.6 任务/活跃度：进度是"服务端 + 客户端本地"两本账（2026-11-01，B5）
+
+实现集中在 [`src/tasks.ts`](../src/tasks.ts)（集合、进度口径、日/周界、领取），
+[`src/payloads.ts`](../src/payloads.ts) 只负责协议形状。四条契约是这一档的全部风险点：
+
+- **① 回包里能读的字段比 proto 少得多。** 客户端 `TaskMsg` 只注册了 `3303/3302/900007/3308/3309`
+  ——`3304` 与 `900010` 连回调都没有（发了也不派发）。`SubmitTask/BatchSubmitTask` 的 handler
+  只取 `overTask`（单条 vs `ipairs` 由 `isOneClick` 决定）、`dayTaskPoint`、`weekTaskPoint`、`chapterIndex`，
+  **`reward=1` 从来没被读过**：发奖只能靠 `ShowItem_Push`。`3302` 只把 `activePointId` `append` 进
+  `passedDayPoints`、`3309` 只把 `id` `append` 进 `passedWeekPoints`，所以回包**只能带本次新领的那几个 id**，
+  带全量等于让同一个宝箱在客户端里累加两次。
+- **② 进度是混合口径。** `TaskDataMgr.UpdateTaskProgress`（`748180cd…:305`）只在
+  `taskProgressData[missionId] ~= nil` **且** `pbNew.enum('msg.ServerTaskType', condition)` 命中时才用服务端值，
+  其余条件一律本地算。而 `SetTaskProgress` 是**整张 map 清空后重建**，所以登录包里的 `taskProgress`
+  必须是全量；`900007` 只是增量。我们只给自己真记过数的条件号发值（`progressOf` 返回 `null` 的行**不进列表**），
+  没记过的一律不发 —— `TaskTools.GetTaskProgress`（`9efdb781…`）开头是 `local progress = 0`，
+  不在表里的行读成 0，不会崩。
+- **③ `1901`（全章节完成）例外，永远不发。** `UpdateTaskProgress` 对这一条件会就地重写
+  `v.conditionNum = max(#mainTaskData - 1, 0)`；我们发 0 下去，客户端的章节领取按钮就没了。
+  领取门槛同理：`GATED` 集合（= 我们真会 `bumpTask` 的条件号）按"没记过就是 0"拦，
+  `1901` 不在 `GATED` 里，靠"本组还有没领的就拒绝章节奖"来兜。
+- **④ 列表可见性由 `InitTaskList` 决定，不在我们手里。**（`748180cd…:267-283`，逐条命中即止）
+  `chapterId == chapterIndex` → 主线；elseif `dayConditionId == dayGroupIndex` → 日常；
+  elseif `missionType == beginTaskGroupIndex(4)` → 新手；`== weekGroupIndex(7)` → 周；
+  `== NormalActivityTask` → 活动。四条都不中的行在界面上**不存在**（例：mission `1005001`，
+  `chapterId=0/dayConditionId=0/type=1` 是死行）。`rollTasks()` 因此还要防两件事：
+  存档里的 `taskChapter`/`dayGroupIndex` 被手改成一个表里没有的组 → 整个列表空白，
+  所以入档前各校验一次并回落到 101/10001；章节推进也只接受表里真存在的 `chapterId`。
+
+日/周界走 `dayEdgeSec/weekEdgeSec/nextDayRefresh/nextWeekRefresh`（**04:00 UTC+8**，与登录包
+`refreshTimes=65` 里那个 4 同源），`rollDay/rollWeek` 记最近一次翻脸的界点；登录 `10002` 与
+跨天 `10005` 共用这套函数、也共用 `taskProgressBody`/`taskInfoBody`，自测里有一条断言两者必须一致。
+
+被动计数的投递靠 `HANDLERS` 出口的一个包装：`withTaskPush` 在每条 handler 返回后把 `bumpTask`
+攒下的 `pending` 排干成一条 `900007`。`900007` 放 `pushes`（replenish 通道）是安全的 ——
+客户端的 `Ignore_Replenish_MsgID` 只过滤 `ShowItem_Push`；但**同包一旦带 `ShowItem_Push`，
+主包就必须改走 `mainInCompleted`**（同 §3.1 第 1 条）。`deny` 的包会把 `pending` 排干后丢弃，
+不补发：那些计数会在下次登录/跨天随全量 `taskProgress` 回来。
+
+`3303/3308/3302/3309` 的发奖都走同一个式子：`econ.rewardById`（同一 id 既可能指 `FixedReward_Xls` 的
+固定组，也可能直接就是 `Drop_Xls` 的行，两种都认）
+→ 物品落 `save.json` → `ShowItem_Push{comeFrom = 1001 提交任务 / 1002 日常活跃点}` + 同包 `Data_Push`
+（`playerChangeExpandLvl=1`/`changeStrength=3`/`changeMoney=2`/`changePart=10` —— 任务奖励里有
+`11` 源晶碎、`10` 贡献点数这些货币（`Items_Xls.itemType=1`，只能进 `changeMoney`，不推顶栏要等下次登录才对得上）。
+日常组 `10001` 的活跃度天花板是 **180**、宝箱最高档 **100**，所以完全离线也能把五档领满。
+
+**B5 有意没做的事**：后端观测不到的条件一律**不发进度**，行就显示成 0/N 且永远领不了
+（巡逻 `2608`、周常的 `1609/1621/1626/3102` 那几条玩法未实现、成就/活动那些靠本地
+`TaskTools.GetTaskProgress` 算的我们也一样不发）；`1002`（秘书互动）只能靠客户端发 `3304` 上报，
+我们没法替它点；活动任务（`NormalActivityTask`）那条分支没接；`3304` 的 `errCode` 恒 0。
 
 ### 怎么加一个协议
 
