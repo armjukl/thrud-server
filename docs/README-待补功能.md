@@ -1,22 +1,30 @@
 # 斯露德假服 · 待补功能
 
-> 最后更新：2026-10-29 ｜ 协议现状 [`README-协议清单.md`](README-协议清单.md) ｜ 当前方案 [`README.md`](README.md)
+> 最后更新：2026-11-01 ｜ 协议现状 [`README-协议清单.md`](README-协议清单.md) ｜ 当前方案 [`README.md`](README.md)
 
 ---
 
 ## 1. 数值 / 成长（本版新增，最影响体验）
 
-### 1.1 通关加经验 / 统御等级成长（未做）
+### 1.1 通关加经验 / 统御等级成长 —— 已做（2026-11-01，分支 `apk-server` · B3）
 
 - 章节解锁由客户端 `LevelDataMgr.IsChapterUnlock` 判定，其中一条是
   **`config.unlockLevel > PlayerDataManager.GetPlayLevel()` → 锁**；
   `MainChapter_Xls` 里 `unlockLevel` 最高 **45**。
-- 目前玩家等级是**写死的**（[`data/save.json`](../data/save.json) 的 `player.level`，已设 45 以全开章节）。
-  真服是靠通关发**导师经验**（`MainLevel_Xls.userExpReward`）按客户端 `PlayerGrow` 曲线升统御等级，
-  **这条服务端逻辑没做** → 打完关等级不动、后续章节不会自然解锁。
-- 要补：`OverMainLevel`/`OverTrainLevel` 胜利时按关卡表发经验 → 用成长曲线升级 → 落 `save.json`
-  并推 `Data_Push`（`playerChangeExpandLvl`，字段1）。**已排期：`gs-parity` 第一档 B3**（原语 `econ.addExp` /
-  `rollPlayerLv` 在地基里已备好）。
+- `OverMainLevel(3004)` 重构 + `OverTrainLevel(3005)` 新接：胜利读 `MainLevel/TrainLevel.userExpReward`
+  （导师经验）→ `econ.addExp` 沿 `PlayerGrow` 曲线连升 → 落 `save.json` → 同包推
+  `Data_Push{playerChangeExpandLvl=1, changeStrength=3}`。`overSoloPlayerInfo` 的四个 required
+  改成"结算前/结算后"两组值（以前四值同值 → 面板判不出升级）。口径与三件麻烦事见
+  [协议清单 §4.4](README-协议清单.md)。
+- **遗留**（不是 bug，是有意的范围）：进本**不扣体力**（`powerCost`/`strengthCost` 读了不扣）、
+  不发 `leaderExpReward`、不给首通/三星奖励、任务进度不涨（等 B5 的 `bumpTask` 回来在两条成功路径上补调用）。
+  `lastBattle`/`settledUniqueId` 是内存态，**假服重启即清零**：重启前未结算的那一场只回包、不写档、不发经验。
+- 现档 `player.level = 45` 是历史手改值（当初为全开章节设的）；从现在起等级是打出来的，
+  `PlayerGrow` 曲线铺到 **120 级**（第 120 行 `exp=9999999` 就是封顶；体力上限 44 级起恒为 200，
+  升级按 `addPower` 实发 —— `econ.addStrength` 不钳上限，`catchUpStrength` 只按 `Common 10042`
+  的周期把体力往上限补、**只补不削**），
+  要复现"从零自然解锁"得换个新档一路通关。
+- **真机一轮还没跑**（自检 82/82 修的是"包对不对 + 落盘对不对"，测不到"顶栏等级跳不跳"）。
 
 ### 1.2 养成九条（`1001/1002/1003/1004/1005/1008/1010/1011/1016`）—— 已做（2026-10-28，分支 `gs-parity` · B1）
 
@@ -165,10 +173,13 @@
 
 ## 7. 建议顺序
 
-0. **对齐路 B 假 GS**（分支 `gs-parity`，地基 + B1 养成 + B2 武装已做）—— 第一档余 **B3 通关发经验 →
-   B4 挂机 → B5 任务 → B6 签到**；每档 `build/selftest` 全绿 + 一轮真机才开下一档。B3 会顺手解掉 §1.1。
-   ⚠ B1/B2 的真机轮**攒在一起跑**（跑之前先按 [存档修改](README-存档修改.md)「给武装 B2 的真机轮备料」补材料）。
-1. **通关加经验 / 统御等级成长**（§1.1）—— 让关卡/章节自然解锁，别再靠手改 `player.level`
+0. **对齐路 B 假 GS**（迭代线已从 `gs-parity` 换到 **`apk-server`**；地基 + B1 养成 + B2 武装 + **B3 通关**已做）
+   —— 第一档余 **B4 挂机 → B5 任务 → B6 签到**；每档 `build/selftest` 全绿 + 一轮真机才开下一档。
+   ⚠ 现在真机轮不再依赖这台 PC 起服：APK 里就是同一份 `dist-cjs`，界面改档 + 看日志都能自己来
+   （[安卓 APK 假服 §2.1](README-安卓APK假服.md) 是重出包流程）。**攒着的真机轮**：B1 的
+   1204/1205/1207/锁定洗练未覆盖 + B3 整条未跑（顶栏等级跳不跳）；跑之前按
+   [存档修改](README-存档修改.md)「给武装 B2 的真机轮备料」补材料。
+1. ~~**通关加经验 / 统御等级成长**（§1.1）~~ —— **已由 B3 解掉**（2026-11-01）
 2. 肉鸽 `9300009` / 元素塔 `9400004` / 乌拉拉 `20001`（补骨架数据）
 3. 抽卡做真（概率/保底/UP/消耗）
 4. 镜像 / 符灵 / 副本 等其余系统"全解锁"

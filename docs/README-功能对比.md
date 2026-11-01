@@ -22,7 +22,7 @@
 | 配置表 | 直接读客户端已加载的 Lua 表 | `tools/gen_tables.py` 把整表搬进 `src/data/tbl/`，`tbl.ts` 统一取数面（行存/列存两种形状在这里展开） |
 | 失败处理 | 不 PostMsg 就行 | 必须回**合法帧**否则客户端 20 s 超时挂 `210001` → 发明 `deny`（`header=0` 空包：请求收尾、遮罩关掉、一条回调都不跑）。见 [协议清单 §4.1](README-协议清单.md) |
 | 载体 | 只在那台被注入的进程里跑 | 手机/PC 客户端都能连，`frpc` 可把 9443 挂公网 443 |
-| 自检 | 33 项构建自检 + 39 条真字节断言（`frida-gadget/`） | `npm run selftest` **66 条**（含 proto required 全覆盖 + 帧级端到端 + 落盘回归） |
+| 自检 | 33 项构建自检 + 39 条真字节断言（`frida-gadget/`） | `npm run selftest` **82 条**（含 proto required 全覆盖 + 帧级端到端 + 落盘回归；同一套在 CJS 产物 + node18 上再跑一遍 = APK 那份） |
 
 **结论先说**：路 B 是"语义供体"，不是"可以照抄的实现"。B1/B2 的口径全部**回到客户端 Lua 自己算的那套**，
 所以有 §4 那五处"路 B 错、我们对"。
@@ -38,7 +38,7 @@
 | 武装（突破/强化/分解/上锁/精炼/洗练/选保留/换装） | 有（`:2216-2244, 2419-2594, 2618-2715, 6464-6624` 就是这一族） | ✅ **B2 七条** `1201 1202 1204 1205 1207 1208 1209` + 原有 `1203`；随机数 17/18 真编、实例落盘 | [核] |
 | 抽卡 | 有 | ✅ `2000` 按池真实掉落链（`LotteryInstance→Drop→DropSet→DropGroup`），结果走 `ShowItem_Push`，新角色即时入大厅 | [核] |
 | 背包 / 货币 / 消耗 | 有 | ✅ 原语齐（`econ.ts`：`checkConsume/payConsume/payItemList/costItem/addItem/addMoney/rewardById/fixedRewardItems`），扣发一律按 `Consume_Xls`/`Items_Xls`；顶栏数量靠 `ChangeMoney_Push`+`ChangePart_Push` | [核] |
-| 主线通关**发经验 / 统御等级** | 有 | ⚠ `3004` 只写 `levels[]`（星级/通关记录留得住），**不给 `player.level` 加经验** → 靠它自然解锁章节这条还没通。**B3** | [未核] |
+| 主线/训练通关**发经验 + 统御等级** | 有 | ✅ **B3** `3004` 重构 + `3005` 新接：按 `MainLevel/TrainLevel.userExpReward` 走 `PlayerGrow` 曲线滚级，推 `playerChangeExpandLvl`；关卡 id 从 `11028` 的战斗上下文取，同 `uniqueId` 只发一次经验。**不扣进本体力**（见 §7） | [核] |
 | 挂机 / 外派（`30400..30405`） | 有（PC 版有托管） | ❌ 未接，存档块 `hangUp` 已备好、`passTime` 口径已定。**B4** | [未核] |
 | 任务 / 活跃度（`3301..3309`） | 有 | ⚠ 只接了 `3304`（回 errCode=0）；`tasks` 存档块与日/周界锚点在 B1 时已铺好。**B5** | [未核] |
 | 签到 / 七日（`3308/3309` + `10051`） | 有 | ⚠ `10051` 与登录 `monthSign` 是骨架（能领、不算真进度），`bg` 七日块已备。**B6** | [未核] |
@@ -114,12 +114,12 @@
 
 | 项 | 数字 / 状态 |
 |---|---|
-| 分支 / HEAD | `gs-parity` / `5f1ef35`（地基 `8edea5b` → B1 `a845dfc`+`fb9d5c2` → B2 `5f1ef35`） |
-| `HANDLERS` 注册 | **56 条**（`node -e "console.log(Object.keys(require('./dist/payloads.js').HANDLERS).length)"`） |
-| 自检 | **69/69 通过**，`npm run selftest` 23 s（峰值 RSS 169 MB；本轮 +3 条：具相 `activeSkills` 的 type 契约、百分比属性不得取整、武装等级/突破成长分段累计） |
-| typecheck / build | 5.99 s（357 MB）/ 冷编译 6.33 s（371 MB），阈值 8 s / 15 s |
+| 分支 / HEAD | **`apk-server`**（安卓 APK 与 B 组共用的迭代线，`gs-parity` 已整条并入；分叉表与"先提交后打包"的理由见 [安卓 APK 假服 §10](README-安卓APK假服.md)）。谱系：地基 `8edea5b` → B1 `a845dfc`+`fb9d5c2` → B2 `5f1ef35` → 属性修复 `92864f5` → APK 步0-7 `5bc2c64` → **B3 本次** |
+| `HANDLERS` 注册 | **57 条**（`node -e "console.log(Object.keys(require('./dist/payloads.js').HANDLERS).length)"`） |
+| 自检 | **82/82 通过**，`npm run selftest` 25 s（峰值 RSS 191 MB；本轮 +4 条：主线胜利发经验与幂等、打败/无结果不落盘、训练本次数与 passTime、3005 打在主线战斗后不认关卡）。CJS 产物同一套：`SLD_DIST=dist-cjs /home/tmp/node18/bin/node test/selftest.mjs` → 82/82（node v18.20.4） |
+| typecheck / build | 5.50 s（360 MB）/ 冷编译 6.33 s（371 MB），阈值 8 s / 15 s |
 | `dist` / `src/data/tbl` 体积 | 15 MB / 13 MB |
-| 第一档进度 | 28 条新命令里 **15 条已接**（B1 8 + B2 7；`1001` 是重构已有 handler，不在这 28 条里 —— 判据见 `selftest.mjs` 的 `TIER1_DONE`，注册表守卫会拦住"偷偷接了不登记"）；余 **13 条：B3 通关发经验 1 / B4 挂机 6 / B5 任务 4 / B6 签到 2** |
+| 第一档进度 | 28 条新命令里 **16 条已接**（B1 8 + B2 7 + B3 1；`1001`/`3004` 是重构已有 handler，不在这 28 条里 —— 判据见 `selftest.mjs` 的 `TIER1_DONE`，注册表守卫会拦住"偷偷接了不登记"）；余 **12 条：B4 挂机 6 / B5 任务 4 / B6 签到 2** |
 | **真机验证** | 第一轮已跑（2026-10-31 12:43-13:00，判定点见 [待补功能 §1.3](README-待补功能.md)）：**B1 九条 + B2 的 1201/1202/1208/1209 全绿**，落盘与扣费逐条核对；随机数形状与修正后口径一致（2★ 技0/属1、5★ 技2/属3）。**未覆盖**：1204 分解、1205 上锁、1207 精炼、锁定洗练（`1090102` 没动）。两侧看日志的位置在 [待补功能 §8](README-待补功能.md) |
 | 真机反馈的三个缺陷 | ① **武装/角色面板暴击率(201)、暴击伤害(200) 恒为 0** —— `attrs.ts` 把这两列跟 hp/atk 一起 `Math.floor(v+0.5)`，而表里它们是小数（0.02=2%、0.4=40%），542 行里非零的这两列没有一行是整数 → 百分比属性只清浮点尾差不取整。② **满级点具相卡住、升不了技能** —— `LeaderInfo.activeSkills(17)` 按战斗侧的 type 1/2/3 移位发，且第 1 格塞的是**武器射击技能**（`SkillValue` 只有 1 级、`consumeId=0`）：客户端 `GetActiveSkill(1)` 拿到错 id → 下一级配置取不到 → 潜能觉醒按钮不出现（真机日志里确实一条 `1008` 都没进来），红点判据又拿 `consumeId=0` 去 index `Consume` 表 → 报错卡面板。养成侧只该发 `{type=1,id=activeSkillId}` + `{type=2,id=jizouSkillGroup}`（普攻由客户端从 `talentSkills` 挑 `commonSkillId[1]`），战斗侧 `LeaderBattleInfo.activeSkills=12` 的另一套口径保持不动。③ **武器升级/突破后面板属性与总战力不动** —— `weaponAttr` 只按"当前突破的成长行 ×(等级-1)"算，既没分段（每突的成长行不同：5★ 攻 9.26→9.35→10.45/级），也**完全没读 `growAddAttributeID`**，突破白送的那一坨（突1 +114 攻 / +2% 暴击率 / +2.5% 暴伤）凭空消失；`heroPower` 又只读角色基础行 + 1 级 0 突的武装，于是角色升级、武器升级、武装突破都推不动战力。现在按客户端注释的公式（`8c78c6be…:1069`）分段累计，各突等级区间取 `WeaponBreak.breakGrowLimit`（整表，`data/weaponbreak.ts` 没这列），`heroPower` 改吃角色成长属性与穿戴武装的真实等级/突破 |
 | 真机前的前置 | **先备料**（假服是真扣费，没料就每条 `deny`，现象像"没实现"）：`1090101`/`1090102`/`1030011`/`1030012`/`1090001` + 金币，见 [存档修改「给武装 B2 的真机轮备料」](README-存档修改.md) |
@@ -127,8 +127,27 @@
 
 ---
 
-## 7. 下一档（B3）范围预告
+## 7. 本档（B3）落了什么 / 下一档（B4）
 
-- `3005` 通关发经验 + `3004` 顺手接上 `econ.rollPlayerLv`/`addExp`，解掉 [待补功能 §1.1](README-待补功能.md)（章节/关卡自然解锁不再靠手改 `player.level`）；
-- 通关要推 `Data_Push.playerChangeExpandLvl(1)`，否则顶栏等级不跳；
-- 同批考虑把 `bumpTask`（升级/通关类任务进度）铺好，给 B5 省一半工作。
+### 7.1 B3 通关结算（2026-11-01，已做）
+
+- `3005 OverTrainLevel` **新接**、`3004 OverMainLevel` **重构**：胜利时读 `MainLevel/TrainLevel.userExpReward`
+  → `econ.addExp` 沿 `PlayerGrow` 曲线连升（升级顺带补 `addPower` 那笔体力）→ 落 `save.json`
+  → 同包推 `Data_Push{playerChangeExpandLvl=1, changeStrength=3}`。[待补功能 §1.1](README-待补功能.md)
+  的"打完关等级不动、后续章节不会自然解锁"到此解掉 —— 等级从此是**涨出来的**，不是写死的
+  （现档的 45 级是历史手改值，`MainChapter_Xls.unlockLevel` 最高也是 45，新档要靠一路通关升上去）。
+- 修了 `OverSoloPlayerInfo` 的老错：四个 required 以前全填当前值，客户端 `newLevel == oldLevel`
+  判不出升级 → 结算面板经验条不动。现在是 `{oldExp, oldLevel, newExp, newLevel}` 两组值。
+- 关卡 id / 幂等 / 行 id 重叠这三件事的实现口径写在 [协议清单 §4.4](README-协议清单.md)（含真机日志证据）。
+- **有意没做**（别当成 bug 来报）：① 进本**不扣体力**（`powerCost`/`strengthCost` 读了不扣）；
+  ② 不发 `leaderExpReward`（武将经验由客户端本地结算）；③ 不发首通/三星奖励；
+  ④ 任务进度不涨 —— `bumpTask` 是 B5 的活，届时在这两条 handler 的成功路径上补一次调用即可；
+  ⑤ `lastBattle`/`settledUniqueId` 是内存态，**假服重启即清零**，重启前未结算的那一场只回包不写档。
+
+### 7.2 下一档（B4）范围预告
+
+- 挂机六条 `30400/30401/30402/30403/30404/30405`：新建 `src/hangup.ts`，存档块 `hangUp` 已备好、
+  `passTime` 口径已定（见 §2 那张表的 B4 行）；接之前先照 §4.4 的办法核一遍 C2S 到底带了什么字段，
+  别重演"请求里没有 id"这类事；
+- 收益结算的数据源（表内每分钟产出 / 离线时长）以客户端 handler 的实际读法为准，先抓一条真帧再定口径；
+- 若 B4 期间 `bumpTask` 原语先长出来，回头给 B3 的两条补上任务进度（一个 commit，不动结算口径）。

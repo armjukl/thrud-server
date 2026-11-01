@@ -24,14 +24,14 @@ import { LEADER_DEBRIS } from "./data/leaderdebr.js";
 import { LEADER_QUALITY, WEAPON_GRATE } from "./data/rarity.js";
 import { poolDraw } from "./gacha.js";
 import {
-  addItem, addMoney, checkConsume, countItem, fixedRewardItems, grantWeapon, ITEMTYPE, itemType,
+  addExp, addItem, addMoney, checkConsume, countItem, fixedRewardItems, grantWeapon, ITEMTYPE, itemType,
   leaderLevelExp, leaderMaxLv, newEffects, payConsume, payItemList, upgradeByExp, weaponLevelExp,
   weaponMaxLv, type Effects,
 } from "./econ.js";
 import { setSkillLv, skillConsumeId, skillLv, stickMaxLv, upgradeSkill } from "./skills.js";
 import { all, arr, num, row } from "./tbl.js";
 import {
-  characterById, defaultCharacter, emptyRand, loadSave, saveSave,
+  characterById, defaultCharacter, emptyRand, loadSave, newLevelRecord, saveSave,
   type SaveCharacter, type SaveData, type SaveWeapon, type SaveWeaponRand,
 } from "./save.js";
 import {
@@ -110,6 +110,7 @@ export const CMD = {
   CloseBattleSettle: 11031,
   BattleLeaveFinishS2C: 11032,
   OverMainLevel: 3004,
+  OverTrainLevel: 3005,
   SwitchClothing: 1007,
   UpgradeLeader: 1001,
   // 养成 (B1): 等级/突破/位阶/技能. 号见 proto/CmdDefine.proto:68-83
@@ -879,11 +880,27 @@ function battlePlayerInfo(s: SaveData, leaderIds: number[]): Buffer {
 // 数据表见 data/mainlevels.ts (从客户端 Lua 反解).
 const BATTLE_NET_INSTANCE_ID = 2872; // 服务器战斗副本实例 id(旧版实现固定值, 客户端不据此查表)
 
-// 结算(OverMainLevel)里 battleId 必填, 但请求不带关卡 id -> 记下最近一次 StartSoloBattle 的关卡.
-let lastBattleLevelId = 0;
-let battleUniqueSeq = 1;
+// 结算包不带关卡 id: 真机抓来的 3004 只有 result(1)/starArray(2)/fightPar(3) 三类字段,
+// 3005 更少(result(1)/fightPar(2)) -> "这一场是哪一关、是主线还是训练"只能在 StartSoloBattle 时记下.
+const BATTLE_TYPE_TRAIN = 2;   // CONST_BattleType: 1=主线 2=训练 3=多人训练 5=爬塔
+const isTrainBattle = (type: number) => type === BATTLE_TYPE_TRAIN || type === 3;
+// uniqueId 一场一个: 客户端 UIBattleMsg.CheckSameUniqueId 拿它去重, 每包换新号会把同场的重复
+// 轮询当成"新一场结算"重铺面板(经验也就发第二遍).
+let lastBattle = { levelId: 0, type: 1, uniqueId: 0 };
+let battleUniqueSeq = Date.now() % 0x3ffffff0;
+// 这一场的经验发过了没有: 客户端会轮询结算(UIBattleMsg.ClockRequestMsg), 同一场重复送达时
+// 靠 uniqueId 认出来, 否则一场战斗发两遍经验.
+let settledUniqueId = 0;
 
-function resolveLevelInstance(levelId: number): { levelInstanceId: number; levelStageId: number; known: boolean } {
+// 关卡实例: 主线查 MainLevel.levelId/stageLevel(data/mainlevels.ts), 训练查 TrainLevel.newLevelId/
+// stageLevel —— 两边的关卡行 id 是重叠的(都有 100101), 所以只能按战斗类型分流, 不能靠"查得到"猜.
+function resolveLevelInstance(levelId: number, battleType: number): { levelInstanceId: number; levelStageId: number; known: boolean } {
+  if (isTrainBattle(battleType)) {
+    if (row("TrainLevel", levelId)) {
+      return { levelInstanceId: num("TrainLevel", levelId, "newLevelId"), levelStageId: num("TrainLevel", levelId, "stageLevel"), known: true };
+    }
+    return { levelInstanceId: levelId, levelStageId: 1, known: false };
+  }
   const m = MAIN_LEVEL[levelId];
   if (m) return { levelInstanceId: m[0], levelStageId: m[1], known: true };
   return { levelInstanceId: levelId, levelStageId: 1, known: false };
@@ -892,11 +909,10 @@ function resolveLevelInstance(levelId: number): { levelInstanceId: number; level
 // BattleEnterInfo (msg.proto): 战场初始数据. 五个 required + teamCapability(double) 必给.
 function battleEnterInfo(req: GsRequest): Buffer {
   const s = loadSave();
-  const levelId = reqNum(req, 1) ?? 0;     // StartSoloBattle.battleId = 关卡行 id (MainLevel.id)
-  const battleType = reqNum(req, 2) ?? 1;  // BattleType
+  const { levelId, type: battleType } = lastBattle;   // StartSoloBattle 已把关卡与战斗类型记进上下文
   const leaderIds = squadLeaderIds(req);
-  const { levelInstanceId, levelStageId, known } = resolveLevelInstance(levelId);
-  if (!known) log("warn", "battle", `level=${levelId} 不在 MainLevel 表 -> levelInstanceId 回退用关卡id(可能卡加载)`);
+  const { levelInstanceId, levelStageId, known } = resolveLevelInstance(levelId, battleType);
+  if (!known) log("warn", "battle", `level=${levelId} type=${battleType} 不在关卡表 -> levelInstanceId 回退用关卡id(可能卡加载)`);
   const capability = (leaderIds.length || s.characters.length || 1) * 100;
   const seed = (Date.now() >>> 0) & 0x7fffffff;
   return pb.concat(
@@ -919,7 +935,9 @@ function startSoloBattleS2C(req: GsRequest): Buffer {
   const s = loadSave();
   const battleId = reqNum(req, 1);
   const battleType = reqNum(req, 2);
-  if (battleId) lastBattleLevelId = battleId;
+  // 空字段的 11028 也见过(真机紧跟着结算又来一条), 关卡/类型沿用上一场, 但号必须换新:
+  // 这是一场新战斗.
+  lastBattle = { levelId: battleId ?? lastBattle.levelId, type: battleType ?? lastBattle.type, uniqueId: ++battleUniqueSeq };
   const leaderIds = squadLeaderIds(req);
   // 战斗服地址: 指向本进程的 KCP 网关(它同样收 UDP 战斗消息). 战场内 12xxx 同步尚未实现,
   // 先把地址给出去让客户端能连; 真实战斗服行为待后续迭代.
@@ -930,7 +948,7 @@ function startSoloBattleS2C(req: GsRequest): Buffer {
     pb.vfield(4, config.gateway.port),       // socketPort
     pb.vfield(5, 1),                         // serverVersion
   );
-  log("info", "battle", `StartSoloBattle battleId=${battleId} type=${battleType} leaders=[${leaderIds.join(",")}] uid=${s.player.uid} -> battleEnterInfo`);
+  log("info", "battle", `StartSoloBattle level=${lastBattle.levelId} type=${lastBattle.type}${isTrainBattle(lastBattle.type) ? "(训练)" : ""} uniqueId=${lastBattle.uniqueId} leaders=[${leaderIds.join(",")}] uid=${s.player.uid} -> battleEnterInfo`);
   return pb.concat(
     pb.vfield(1, 1),       // result=true
     pb.bfield(2, battleEnterInfo(req)), // battleEnterInfo
@@ -968,14 +986,32 @@ function nestedNum(req: GsRequest | undefined, outer: number, inner: number): nu
   return g ? Number(g.value) : null;
 }
 
-// OverSoloPlayerInfo{ required oldExp/oldLevel/newExp/newLevel }
-function overSoloPlayerInfo(s: SaveData): Buffer {
+// OverSoloPlayerInfo{ required oldExp=1/oldLevel=2/newExp=3/newLevel=4 } —— 结算面板那格经验条
+// 全靠"结算前"与"结算后"两组值不相等, 四个同值等于告诉客户端这一场什么都没涨.
+function overSoloPlayerInfo(before: { level: number; exp: number }, s: SaveData): Buffer {
   return pb.concat(
-    pb.vfield(1, s.player.exp),   // oldExp
-    pb.vfield(2, s.player.level), // oldLevel
+    pb.vfield(1, before.exp),     // oldExp
+    pb.vfield(2, before.level),   // oldLevel
     pb.vfield(3, s.player.exp),   // newExp
     pb.vfield(4, s.player.level), // newLevel
   );
+}
+
+// 通关发经验: 关卡表的 userExpReward(导师经验) -> PlayerGrow 曲线滚级(顺带补升级送的那笔体力).
+// 只发导师经验: leaderExpReward(武将经验)与首通/三星奖励不在这一档, 边界见 docs/README-功能对比.md §7.1.
+function settleExp(s: SaveData, table: string, levelId: number, eff: Effects): number {
+  const exp = levelId ? num(table, levelId, "userExpReward") : 0;
+  if (exp > 0) addExp(s, exp, eff);
+  return exp;
+}
+
+// Data_Push{ playerChangeExpandLvl=1{curLevel,curExp} }: 顶栏等级/经验条的唯一数据源, 不推就得重登才跳;
+// 升级补的体力走 changeStrength=3, 否则"弹了 +10 却没到账".
+function playerExpPush(s: SaveData, eff: Effects): Buffer | null {
+  if (!eff.player) return null;
+  const parts = [pb.bfield(1, pb.concat(pb.vfield(1, s.player.level), pb.vfield(2, s.player.exp)))];
+  if (eff.strength) parts.push(pb.bfield(3, pb.vfield(1, s.player.strength)));
+  return pb.concat(...parts);
 }
 
 // MainLevelInfo{ required id/passTime }
@@ -990,31 +1026,94 @@ function mainLevelInfoBody(id: number, stars: number[], passTime: number): Buffe
   );
 }
 
-function overMainLevelS2C(req: GsRequest): Buffer {
+function overMainLevelS2C(req: GsRequest): GsResult {
   const s = loadSave();
-  const result = reqNum(req, 1) ?? 0;        // 0无/1平/2胜/3负
+  const result = reqNum(req, 1) ?? 0;        // 0无/1平/2胜/3负 (BattleResult)
   const win = result === 2;
   const stars = reqNums(req, 2);
   const passTime = nestedNum(req, 3, 5) ?? 0; // fightPar.attackTime
-  const levelId = lastBattleLevelId;
-  const uniqueId = (Date.now() % 0x3fffffff) + battleUniqueSeq++;
-  // 通关落盘: 把本关写入存档 levels, 重登仍保留(否则"打完这关"只活在客户端本地, 重登又变没打).
+  const { levelId, uniqueId } = lastBattle;
+  const pass = passTime || 30;                // 0 会被客户端当"瞬间打完", 扫荡/挂机按它算场次
+  const before = { level: s.player.level, exp: s.player.exp };
+  const eff = newEffects();
+  // 通关落盘: 星级写进 levels(重登仍保留), firstPass 看落盘前有没有这条记录.
+  const firstPass = win && !!levelId && !s.levels[String(levelId)];
+  const fresh = uniqueId !== settledUniqueId;
+  let exp = 0;
   if (win && levelId) {
     const prev = s.levels[String(levelId)] || [];
     s.levels[String(levelId)] = [...new Set([...prev, ...stars])].sort((a, b) => a - b);
+    if (fresh) exp = settleExp(s, "MainLevel", levelId, eff);
+    settledUniqueId = uniqueId;
     saveSave(s);
   }
-  log("info", "battle", `OverMainLevel level=${levelId} result=${result} stars=[${stars.join(",")}] passTime=${passTime} uniqueId=${uniqueId}`);
-  return pb.concat(
-    pb.vfield(1, uniqueId),                 // uniqueId (required)
-    pb.vfield(2, levelId),                  // battleId (required)
-    pb.vfield(3, win ? 1 : 0),              // result
-    pb.vfield(6, passTime),                 // passTime (required)
-    pb.bfield(7, overSoloPlayerInfo(s)),    // playerInfo (required)
-    pb.bfield(8, mainLevelInfoBody(levelId, stars, passTime)), // mainLevelInfo
-    pb.vfield(9, 1),                        // firstPass
-    pb.vfield(10, 1),                       // multipleValue
-  );
+  log("info", "battle", `OverMainLevel level=${levelId} result=${result} stars=[${stars.join(",")}] passTime=${pass} uniqueId=${uniqueId} +exp=${exp} 统御 ${before.level}->${s.player.level}`);
+  const push = playerExpPush(s, eff);
+  return {
+    body: pb.concat(
+      pb.vfield(1, uniqueId),                 // uniqueId (required)
+      pb.vfield(2, levelId),                  // battleId (required)
+      pb.vfield(3, win ? 1 : 0),              // result
+      pb.vfield(6, pass),                     // passTime (required)
+      pb.bfield(7, overSoloPlayerInfo(before, s)),    // playerInfo (required)
+      pb.bfield(8, mainLevelInfoBody(levelId, stars, pass)), // mainLevelInfo
+      pb.vfield(9, firstPass ? 1 : 0),        // firstPass
+      pb.vfield(10, 1),                       // multipleValue
+    ),
+    pushes: push ? [[CMD.DataPush, push]] : [],
+  };
+}
+
+// 训练本结算 3005: C2S 只有 {result=1, fightPar=2}, 连 starArray 都没有 -> 关卡 id 只能从上下文取,
+// 而且训练/主线行 id 重叠(两边都有 100101), 所以只认"上一场是训练战斗"这一路.
+// 客户端 OverTrainLevelHandler: msg.result 为真才 PassTrainLevel(msg.trainLevelInfo) —— 认不出关卡时
+// 宁回 result=false 也别回一个 id=0 的 trainLevelInfo 让它去查表.
+function overTrainLevelS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const result = reqNum(req, 1) ?? 0;
+  const passTime = nestedNum(req, 2, 5) ?? 0;
+  const levelId = isTrainBattle(lastBattle.type) ? lastBattle.levelId : 0;
+  const uniqueId = lastBattle.uniqueId;
+  const pass = passTime || 30;
+  const win = result === 2 && !!levelId;
+  const before = { level: s.player.level, exp: s.player.exp };
+  const eff = newEffects();
+  const key = String(levelId);
+  const known = win && !!row("TrainLevel", levelId);
+  const fresh = known && uniqueId !== settledUniqueId;
+  const firstPass = known && !s.trainLevels[key];
+  let exp = 0;
+  if (known) {
+    // 新记录由 newLevelRecord 起的就是"本场 1 次"; 已有记录才累加.
+    const prev = s.trainLevels[key];
+    const r = prev ?? newLevelRecord(levelId, pass);
+    if (prev) { r.todayAttackNum += 1; r.attackNum += 1; }
+    r.lastAttackTime = Date.now();
+    r.passTime = passTime || r.passTime;
+    s.trainLevels[key] = r;
+    if (fresh) exp = settleExp(s, "TrainLevel", levelId, eff);
+    settledUniqueId = uniqueId;
+    saveSave(s);
+  }
+  const rec = known ? s.trainLevels[key] : null;
+  log("info", "battle", `OverTrainLevel level=${levelId || "-"} result=${result} passTime=${pass} uniqueId=${uniqueId} 进本=${rec ? rec.attackNum : 0}${fresh ? ` +exp=${exp}` : "(同场不重发)"} 统御 ${before.level}->${s.player.level}${win && !known ? " [表里没这关, 按未通关回]" : ""}`);
+  const push = playerExpPush(s, eff);
+  return {
+    body: pb.concat(
+      pb.vfield(1, uniqueId),                 // uniqueId (required)
+      pb.vfield(2, levelId),                  // battleId (required)
+      pb.vfield(3, win ? 1 : 0),              // result
+      pb.vfield(5, pass),                     // passTime (required)
+      pb.bfield(6, overSoloPlayerInfo(before, s)),  // playerInfo (required)
+      ...(rec ? [pb.bfield(7, pb.concat(                // trainLevelInfo
+        pb.vfield(1, rec.id), pb.vfield(2, rec.todayAttackNum), pb.vfield(3, rec.attackNum),
+        pb.vfield(4, BigInt(rec.lastAttackTime)), pb.vfield(8, rec.passTime),
+      ))] : []),
+      pb.vfield(8, firstPass ? 1 : 0),        // firstPass
+      pb.vfield(10, 1),                       // multipleValue
+    ),
+    pushes: push ? [[CMD.DataPush, push]] : [],
+  };
 }
 
 // ---- 抽卡 (按池真实掉落 roll) ----
@@ -1654,6 +1753,7 @@ export const HANDLERS: Record<number, GsBuilder> = {
   // 战斗: 11028 进战斗(核心), 11003 战斗服 KCP 登录, 11018/11019/11031/11032 结算与离开
   [CMD.StartSoloBattle]: startSoloBattleS2C,
   [CMD.OverMainLevel]: overMainLevelS2C,
+  [CMD.OverTrainLevel]: overTrainLevelS2C,
   [CMD.BattleLogin]: battleLoginS2C,
   [CMD.BattleSettle]: battleAck("BattleSettle"),
   [CMD.BattleLeave]: battleAck("BattleLeave"),

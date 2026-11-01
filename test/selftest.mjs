@@ -1276,7 +1276,8 @@ await check('proto: 注册表完整 (基线 handler 不掉 / 第一档进度对�
   for (const id of TIER1_NEW) assert.ok(ps.cmdOf(id), `${id} 不是 CmdDefine 里的合法号`);
   // TIER1_DONE 每批做完往里加; "未注册数" 必须等于"声明还没做的数量" —— 偷偷接了不登记就红灯
   const TIER1_DONE = [1002, 1003, 1004, 1005, 1008, 1010, 1011, 1016,   // B1 养成(1001 重构不在此列)
-    1201, 1202, 1204, 1205, 1207, 1208, 1209];                          // B2 武装
+    1201, 1202, 1204, 1205, 1207, 1208, 1209,                            // B2 武装
+    3005];                                                                // B3 通关
   const stillMissing = TIER1_NEW.filter((id) => !registered.has(id)).sort((a, b) => a - b);
   const declared = TIER1_NEW.filter((id) => !TIER1_DONE.includes(id)).sort((a, b) => a - b);
   assert.deepEqual(stillMissing, declared,
@@ -2186,6 +2187,129 @@ await check('B2 负控: 18 少编一条属性, 形状断言必须抛(这正是�
   ));
   assert.ok(cur.key.length === 2 && short.key.length === 1, '负控得真的少一条, 否则这条检查是空跑');
   assert.throws(() => assertRecastShape('负控', info, WCFG, 1), /!=|条数/);
+});
+
+// ---------------------------------------------------------------- B3 通关结算 (3004/3005)
+// 结算包不带关卡 id: 真机抓来的 3004 只有 result(1)/starArray(2)/fightPar(3), 3005 更少(1/2),
+// 上下文全在 11028 里 -> B3 的用例一律"先进本再结算". 用 checkHandler 单调一条会把上一条用例
+// 留下的战斗上下文当输入, 测到的不是真场景.
+const battleSave = (mut) => {
+  const s = JSON.parse(fs.readFileSync(SAVE_FILE, 'utf8'));
+  Object.assign(s.player, { level: 1, exp: 0, maxExp: 20, strength: 100, maxStrength: 100 });
+  delete s.levels['101101'];      // MainLevel 101101: userExpReward=10, 实例 [1000101,10101]
+  delete s.trainLevels['100101']; // TrainLevel 100101: userExpReward=25, newLevelId=2000001, stageLevel=40201
+  if (mut) mut(s);
+  return s;
+};
+const fld = (dec, n) => dec.find((f) => f.field === n);
+const num1 = (dec, n) => { const f = fld(dec, n); return f === undefined ? undefined : Number(f.value); };
+const settleReq = (result, extra) => GProto.concat(GProto.vfield(1, result), ...(extra ?? []));
+const enterBattle = (run, levelId, type) =>
+  GProto.decodeFields(run(11028, GProto.concat(GProto.vfield(1, levelId), GProto.vfield(2, type))));
+
+await check('B3 3004 OverMainLevel: 胜利按表发经验并推 playerChangeExpandLvl, 星级落盘', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const run = (id, req) => HANDLERS[id]({ msgId: id, packetUUid: 1, proto: req, headerHex: '' });
+  const restore = useSave(battleSave());
+  try {
+    const bei = GProto.decodeFields(fld(enterBattle(run, 101101, 1), 2).value);
+    assert.equal(num1(bei, 2), 1000101, '主线的 levelInstanceId 要查 MainLevel.levelId(客户端拿它查 NewLevelInstance)');
+    assert.equal(num1(bei, 3), 10101, 'levelStageId 要查 MainLevel.stageLevel');
+    const req = settleReq(2, [GProto.vfield(2, 1), GProto.vfield(2, 2), GProto.vfield(2, 3), GProto.bfield(3, GProto.vfield(5, 42))]);
+    const res = run(3004, req);
+    const dec = GProto.decodeFields(res.body);
+    ps.assertRequired('B3 3004 回包', 'OverMainLevel_S2C', dec, { pb: GProto, maxDepth: 3 });
+    assert.equal(num1(dec, 2), 101101, 'battleId 取上下文里的关卡: 结算包自己不带');
+    assert.equal(num1(dec, 3), 1, 'result=2(胜) 要回 true');
+    assert.equal(num1(dec, 6), 42, 'passTime 取 fightPar.attackTime');
+    assert.equal(num1(dec, 9), 1, '底档删了这条记录 -> firstPass=1');
+    const pi = GProto.decodeFields(fld(dec, 7).value);
+    assert.deepEqual([num1(pi, 1), num1(pi, 2), num1(pi, 3), num1(pi, 4)], [0, 1, 10, 1],
+      'OverSoloPlayerInfo 四个值必须"结算前/结算后"成对: 四个同值等于告诉面板这一场没涨');
+    const pl = GProto.decodeFields(fld(GProto.decodeFields(res.pushes.find(([h]) => h === DPUSH)[1]), 1).value);
+    assert.deepEqual([num1(pl, 1), num1(pl, 2)], [1, 10], '顶栏经验条只认 Data_Push.playerChangeExpandLvl');
+    assert.equal(loadSave().player.exp, 10, '10 经验 < PlayerGrow 1 级要的 20 -> 只进账不升级');
+    assert.deepEqual(loadSave().levels['101101'], [1, 2, 3], '星级要落盘, 否则重登又变没打');
+    // 客户端拿 ClockRequestMsg 轮询同一场结算: uniqueId 变了会被当新一场重铺面板, 经验还会发第二遍
+    const again = run(3004, req);
+    const againDec = GProto.decodeFields(again.body);
+    assert.equal(num1(againDec, 1), num1(dec, 1), '同一场的 uniqueId 必须不变');
+    assert.equal(num1(againDec, 9), 0, '第二遍不许还算首通');
+    assert.equal(again.pushes.length, 0, '同场重复结算不许有推送');
+    assert.equal(loadSave().player.exp, 10, '同场重复结算不许再发经验');
+  } finally { restore(); }
+});
+
+await check('B3 3004: 打败/无结果 -> 不写星级不发经验, 但回包照样合规(客户端在轮询)', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const run = (id, req) => HANDLERS[id]({ msgId: id, packetUUid: 1, proto: req, headerHex: '' });
+  const restore = useSave(battleSave());
+  try {
+    enterBattle(run, 101101, 1);
+    for (const result of [3, 0]) {
+      const res = run(3004, settleReq(result, [GProto.bfield(3, GProto.vfield(5, 7))]));
+      const dec = GProto.decodeFields(res.body);
+      ps.assertRequired(`B3 3004 result=${result} 回包`, 'OverMainLevel_S2C', dec, { pb: GProto, maxDepth: 3 });
+      assert.equal(num1(dec, 3), 0, `result=${result} 不许回成胜利`);
+      assert.equal(res.pushes.length, 0, '没赢不许推经验/等级');
+    }
+    assert.equal(loadSave().levels['101101'], undefined, '打败了不许记通关');
+    assert.equal(loadSave().player.exp, 0, '没赢不许发经验');
+  } finally { restore(); }
+});
+
+await check('B3 3005 OverTrainLevel: 实例查 TrainLevel, 次数/passTime 落盘, 升级补的体力同包推', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const run = (id, req) => HANDLERS[id]({ msgId: id, packetUUid: 1, proto: req, headerHex: '' });
+  const restore = useSave(battleSave());
+  try {
+    const bei = GProto.decodeFields(fld(enterBattle(run, 100101, 2), 2).value);
+    assert.equal(num1(bei, 2), 2000001, '训练本的实例 id 来自 TrainLevel.newLevelId —— 给主线的会卡在进战斗加载');
+    assert.equal(num1(bei, 3), 40201, '训练本的 levelStageId 来自 TrainLevel.stageLevel');
+    const res = run(3005, settleReq(2, [GProto.bfield(2, GProto.vfield(5, 31))]));
+    const dec = GProto.decodeFields(res.body);
+    ps.assertRequired('B3 3005 回包', 'OverTrainLevel_S2C', dec, { pb: GProto, maxDepth: 3 });
+    assert.equal(num1(dec, 2), 100101);
+    assert.equal(num1(dec, 5), 31, 'passTime 是 required 5(主线那条是 6), 串号就变成"秒数为 0"');
+    assert.equal(num1(dec, 8), 1, '底档没这条训练记录 -> firstPass=1');
+    const tli = GProto.decodeFields(fld(dec, 7).value);
+    assert.deepEqual([num1(tli, 1), num1(tli, 2), num1(tli, 3), num1(tli, 8)], [100101, 1, 1, 31],
+      'TrainLevelInfo: 新记录起算 1 次, passTime 不许给 0(挂机按它算单场时长)');
+    const rec = loadSave().trainLevels['100101'];
+    assert.equal(rec.passTime, 31, '通关记录要落盘');
+    assert.equal(rec.attackNum, 1);
+    assert.deepEqual([loadSave().player.level, loadSave().player.exp], [2, 5], '25 经验 >= 1 级的 20 -> 升一级余 5');
+    const dp = GProto.decodeFields(res.pushes.find(([h]) => h === DPUSH)[1]);
+    assert.deepEqual([num1(GProto.decodeFields(fld(dp, 1).value), 1), num1(GProto.decodeFields(fld(dp, 1).value), 2)], [2, 5]);
+    assert.ok(fld(dp, 3), '升级送的那笔体力要同包推 changeStrength=3, 否则"弹了 +10 却没到账"');
+    assert.equal(num1(GProto.decodeFields(fld(dp, 3).value), 1), loadSave().player.strength);
+    // 第二场(新 uniqueId): 次数累加, 首通归 0
+    enterBattle(run, 100101, 2);
+    const two = GProto.decodeFields(run(3005, settleReq(2, [GProto.bfield(2, GProto.vfield(5, 20))])).body);
+    assert.equal(num1(GProto.decodeFields(fld(two, 7).value), 3), 2, '第二场的 attackNum 该涨到 2');
+    assert.equal(num1(two, 8), 0, '第二场不是首通');
+  } finally { restore(); }
+});
+
+await check('B3 3005: 上一场是主线战斗 -> 训练结算不认关卡(两边行 id 重叠, 只能按类型分流)', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const run = (id, req) => HANDLERS[id]({ msgId: id, packetUUid: 1, proto: req, headerHex: '' });
+  const restore = useSave(battleSave());
+  try {
+    enterBattle(run, 101101, 1);            // 主线 1 级本
+    const res = run(3005, settleReq(2, [GProto.bfield(2, GProto.vfield(5, 15))]));
+    const dec = GProto.decodeFields(res.body);
+    ps.assertRequired('B3 3005 非训练场回包', 'OverTrainLevel_S2C', dec, { pb: GProto, maxDepth: 3 });
+    assert.equal(num1(dec, 2), 0, '认不出关卡就不许瞎给 battleId');
+    assert.equal(num1(dec, 3), 0, 'result 必须为假: 客户端 msg.result 为真才 PassTrainLevel(查表)');
+    assert.ok(!fld(dec, 7), '不许回 id=0 的 trainLevelInfo 让客户端去查表');
+    assert.equal(loadSave().trainLevels['101101'], undefined, '主线的 101101 不许被写成训练记录');
+    assert.equal(loadSave().levels['101101'], undefined, '训练结算也不许写主线进度');
+  } finally { restore(); }
 });
 
 // ---------------------------------------------------------------- 5. 工具链

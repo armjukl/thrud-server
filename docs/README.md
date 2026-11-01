@@ -20,10 +20,11 @@
 | 战斗高度轴 | ✅ 高度轴按关卡发放（客户端 `NewLevelInstance.controlMode`），第1章 1~8 关已铺外部 Lua 解锁、真机可升降（[战斗移动轴与高度解锁](README-战斗移动轴与高度解锁.md) §7）；✅ gadget 运行期版 `ZAXIS` 全关卡、不推文件，10-18 真机已生效（[改Lua脚本](README-改Lua脚本.md) §4、[注入器 gadget](README-注入器gadget.md) §5.6） |
 | 只靠 hook 的本地化 | 🚧 复刻 PC 纪念版的脚本集已落地（`frida-gadget/`，离线 33 项构建自检 + 39 条真字节断言全绿），**真机一轮还没跑**（[`../../frida-gadget/README.md`](../../frida-gadget/README.md)） |
 | 资源完整性 | ✅ 1583 台账 44,841 条 **逐条 md5 对得上**（改过的 Lua chunk 连带台账那一条 md5 一起换，见 §3 第 1 条） |
-| 养成（升级/突破/星级/技能/式杖） | 🚧 分支 `gs-parity` · B1 已落 9 条：`1001`（原来是"每次 +1 级"的简化版）+ 新接 `1002 1003 1004 1005 1008 1010 1011 1016`，真扣材料 / 真走曲线 / 满级与材料不足**拒单不推 push**（见 [协议清单](README-协议清单.md) §4.1）；真机一轮待跑 |
-| 武装（突破/强化/分解/上锁/精炼/洗练） | 🚧 分支 `gs-parity` · B2 已落 7 条 `1201 1202 1204 1205 1207 1208 1209`：新建 `src/weapons.ts`，`WeaponInfo` 的随机字段 **17/18** 第一次真编出来，实例列表改成落盘的单一真相（见 [协议清单](README-协议清单.md) §4.2/§4.3）；真机一轮待跑（先备材料，见 [存档修改](README-存档修改.md)） |
-| 假服地基（对齐路 B） | 🚧 分支 `gs-parity`：36 张整表进 `src/data/tbl/` + `tbl.ts` 取数面、`econ.ts`/`skills.ts`/`weapons.ts` 扣费发奖与升级曲线、`save.ts` 原子写 + `.bak` 回退 + 结构迁移，自检 66/66；`HANDLERS` 56 条；第一档余 **B3 通关 / B4 挂机 / B5 任务 / B6 签到**（见 [待补功能](README-待补功能.md)） |
-| 手机自服 APK | 🚧 分支 `apk-server`：nodejs-mobile（Node 18.20.4 libnode）内嵌 + 前台服务 + WebView 管理页（开关假服 / 改存档 / 看日志），非 root 绑不了 443 由 gadget 把 sockaddr 端口就地改写 443→9443；离线自检 78/78，**真机一轮还没跑**（[安卓 APK 假服](README-安卓APK假服.md)） |
+| 养成（升级/突破/星级/技能/式杖） | 🚧 B1 已落 9 条：`1001`（原来是"每次 +1 级"的简化版）+ 新接 `1002 1003 1004 1005 1008 1010 1011 1016`，真扣材料 / 真走曲线 / 满级与材料不足**拒单不推 push**（见 [协议清单](README-协议清单.md) §4.1）；真机 2026-10-31 跑过一轮，1204/1205/1207/锁定洗练未覆盖 |
+| 武装（突破/强化/分解/上锁/精炼/洗练） | 🚧 B2 已落 7 条 `1201 1202 1204 1205 1207 1208 1209`：新建 `src/weapons.ts`，`WeaponInfo` 的随机字段 **17/18** 第一次真编出来，实例列表改成落盘的单一真相（见 [协议清单](README-协议清单.md) §4.2/§4.3）；随机数形状真机已核对 |
+| 通关结算 / 统御等级 | ✅ B3（2026-11-01）：`3005 OverTrainLevel` 新接 + `3004 OverMainLevel` 重构，胜利按 `userExpReward` 发导师经验、沿 `PlayerGrow` 滚级、推 `playerChangeExpandLvl`（升级那笔体力同包 `changeStrength`），星级/进本次数落盘；关卡 id 从 `11028` 的战斗上下文取、同 `uniqueId` 不重发经验（见 [协议清单](README-协议清单.md) §4.4）。**真机一轮待跑**；不扣进本体力、不发武将经验与首通三星奖励 |
+| 假服地基（对齐路 B） | 🚧 分支 `apk-server`（原 `gs-parity` 已并入）：36 张整表进 `src/data/tbl/` + `tbl.ts` 取数面、`econ.ts`/`skills.ts`/`weapons.ts` 扣费发奖与升级曲线、`save.ts` 原子写 + `.bak` 回退 + 结构迁移，自检 82/82；`HANDLERS` 57 条；第一档余 **B4 挂机 / B5 任务 / B6 签到**（见 [待补功能](README-待补功能.md)） |
+| 手机自服 APK | 🚧 分支 `apk-server`：nodejs-mobile（Node 18.20.4 libnode）内嵌 + 前台服务 + WebView 管理页（开关假服 / 改存档 / 看日志），非 root 绑不了 443 由 gadget 把 sockaddr 端口就地改写 443→9443；离线自检 82/82（ESM 与 CJS 两套产物都跑），**真机验收 5 条里第 1、2 条已过**（探针读数 + 起服登录，[安卓 APK 假服](README-安卓APK假服.md) §7） |
 
 剩余问题全部是**服务端协议未实现**，不是资源/客户端问题。扣费/经验/曲线这类原语此前在 `src/`
 里一个都没有（旧 41 条 handler 无一条减过库存），现在地基到位、养成已按表扣费，缺的只是把余下命令逐条接上去。
@@ -214,10 +215,11 @@
 
 | 指标 | 数字 | 阈值 |
 |---|---|---|
-| `npm run typecheck` | 5.99 s，峰值 RSS 357 MB | ≤ 8 s |
+| `npm run typecheck` | 5.50 s，峰值 RSS 360 MB | ≤ 8 s |
 | `npm run build`（`rm -rf dist` 后） | 6.33 s，峰值 RSS 371 MB | ≤ 15 s |
 | `npm run build:cjs`（`rm -rf dist-cjs` 后） | 6.39 s，峰值 RSS 371 MB，产物 14 MB | 同上（安卓那条的产物） |
-| `npm run selftest`（78 条） | 24 s，峰值 RSS 180 MB | — |
+| `npm run selftest`（82 条） | 25 s，峰值 RSS 191 MB | — |
+| CJS 产物自检（`SLD_DIST=dist-cjs`，node18） | 同一套 82/82（v18.20.4） | APK 用的就是这份产物 |
 | `src/data/tbl` / `dist` 体积 | 13 MB / 15 MB | — |
 | 36 张表全 parse（25 193 行） | 103 ms | 起服增量 ≤ 400 ms |
 | `payloads.ts` 模块图加载 | 36 ms（惰性 parse，未取到的表不花钱） | — |
@@ -225,6 +227,8 @@
 （2026-10-29 B2 后重测：新增 `weapons.ts` 与 20 条自检，typecheck 4.82→5.99 s、build 5.60→6.33 s，仍在阈值内。）
 （2026-11-01 `apk-server` 后重测自检那一行：66→78 条，23→24 s / 169→180 MB —— 多出来的 12 条里有 node18 起服与探针子进程，
 所以涨幅比条数看起来小。）
+（2026-11-01 B3 后：78→82 条、24→25 s / 180→191 MB —— 通关结算这 4 条是纯内存帧构造，不额外 parse 表；
+typecheck 这次读到 5.50 s，与上表 5.99 s 同一量级，属噪声，不设阈值。）
 
 形状必须是 `const RAW = "<整表 JSON 单行>"` + `JSON.parse`：**类型化字面量在 4.6 MB 单文件上会让 tsc OOM**（161 s 后被杀），
 而 `JSON.parse` 形状 10.58 MB / 32 表只要 1.08 s。单文件超 4 MB 时生成器自动切列存 `{"c":[cols],"r":[[…]]}`（同批小 3.6×），由 `tbl.ts` 展开，业务代码不改。
@@ -241,6 +245,10 @@
 `2000/2001/2002` 抽卡（`SwearHero` / `SelectSwearChange` / `GetSwearRecord`）·
 **养成 B1（真扣费 + 真曲线）**：`1001` UpgradeLeader · `1005` Breach · `1002` Star · `1003` StarLevel ·
 `1008` ActiveSkill · `1004` TalentSkill · `1016` UpgradeStickSkill · `1010` ChangeStickSkill · `1011` ResetStickSkill ·
+**武装 B2（真扣费 + 随机数 17/18 落盘）**：`1201` Breach · `1202` UpgrageWeapon · `1204` Decompose · `1205` Lock ·
+`1207` RefineLevel · `1208` Recasting · `1209` SelectWeaponRandomInfo（+ 原有 `1203` SwitchWeapon、`1007` 列表页）·
+**战斗与结算**：`11003` BattleLogin · `11028` StartSoloBattle · `11018` BattleSettle · `11019/11031/11032` 离场 ·
+**B3 通关结算（真发经验）**：`3004` OverMainLevel · `3005` OverTrainLevel（口径见 [协议清单](README-协议清单.md) §4.4）·
 **空包回**：`890105` BattlePass · `9300009` Rogue · `9400004` ElementRuins
 
 ### HTTP 路由

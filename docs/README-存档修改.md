@@ -201,7 +201,7 @@
 | 状态 | 位置 | 说明 |
 |---|---|---|
 | 新手引导流 `guideData` | [`src/payloads.ts`](../src/payloads.ts) 模块级变量 | `ChangeStep` 上报时存、登录 `GuideInfo` 回填；重启从空开始 |
-| 战斗 `lastBattleLevelId` | 同上 | 记最近一次 `StartSoloBattle` 的关卡，供 `OverMainLevel` 结算用；重启清零 |
+| 战斗上下文 `lastBattle` / `battleUniqueSeq` / `settledUniqueId` | 同上 | `lastBattle = {levelId, type, uniqueId}` 由 `StartSoloBattle(11028)` 写入，`3004/3005` 结算靠它认关卡与战斗类型；`settledUniqueId` 是"这场已发过经验"的幂等记账（客户端每 ~22 s 轮询同一场结算）。**重启三个都清零**：结算包照回（required 合规）但不写档、不发经验 |
 
 ---
 

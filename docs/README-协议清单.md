@@ -134,7 +134,8 @@ Lua `HttpClientForLua` 先派发 `completedList` 再派发 `replenishList`，且
 | 11018 | BattleSettle | ⚠️ 空 body | 结算回执（胜负/掉落）待按客户端日志补 |
 | 11028 | StartSoloBattle | ✅ | 进战斗最小闭环：回 `StartSoloBattle_S2C{result, battleEnterInfo, server}` |
 | 11019 · 11031 · 11032 | BattleLeave · CloseBattleSettle · BattleLeaveFinish | ⚠️ 空 body | 离开/关闭结算，成包即可 |
-| 3004 | OverMainLevel | ✅ | 主线结算 `OverMainLevel_S2C`；胜利写回 `levels[]`（重登保留） |
+| 3004 | OverMainLevel | ✅ 真发经验 | **B3 重构**：主线结算，胜利按 `MainLevel.userExpReward` 发导师经验（`econ.addExp` 走 `PlayerGrow` 滚级）+ 写 `levels[]` 星级 + 推 `Data_Push.playerChangeExpandLvl`；关卡 id 从 `11028` 的战斗上下文取，同 `uniqueId` 不重发（§4.4） |
+| 3005 | OverTrainLevel | ✅ 新接 | 训练本结算，形状同 3004 但 `passTime` 在**字段 5**、带 `trainLevelInfo=7`（`todayAttackNum`/`attackNum` 落 `trainLevels[]`）；**只认上一场是训练战斗**（`CONST_BattleType` 2/3），否则回 `result=false` 且不落盘（§4.4） |
 | 1001 | UpgradeLeader | ✅ 真扣费 | **B1 重构**：读 C2S `itemInfo=3`（`ProtoHashInt2Int`）→ `Items_Xls.useParam` 折成经验 → `while(lv<本突上限 && exp>=本级需求)` 连升；回空包 + 推 `Data_Push.leaderAttrChanged`(+`changePart`)。材料不足/满级 → **拒单**（§4.1） |
 | 1005 | UpgradeLeaderBreach | ✅ 真扣费 | 突破：付 `LeaderBreak[leaderId, breakNum==本突].consumeId`，`breach+1`；S2C 是**空 message**，失败只能拒单 |
 | 1002 | UpgradeLeaderStar | ✅ 真扣费 | 大阶（星）：付**当前**档 `LeaderStar[lid][star].consumeID`，前提是小阶已满（`star+1` 档无 `slv+1` 行）→ `star+1, starLevel=0`。`star` **从 0 起**（`star*3+starLevel` 是属性节点索引） |
@@ -229,6 +230,47 @@ weaponRandomSkill[i]                               →  WeaponRandom[pool].skill
 （[`src/weapons.ts`](../src/weapons.ts)）：空号/撞号走 `wSeq` 重新发号、每个角色补一把默认式仗、缺随机数的补一组
 **按 onlyId 播种**的确定性结果。旧实现是"每次现编列表、不落盘"，B2 的写操作（突破/强化/分解/精炼/洗练）
 若继续走它就全丢，所以列表页（10007）也顺手 `saveSave` —— 发给客户端的号必须留在档里。
+
+### 4.4 通关结算的三件麻烦事（2026-11-01，B3）
+
+`OverMainLevel(3004)` / `OverTrainLevel(3005)` 看着是最简单的两条，实做时撞了三个坑，
+口径都记在这里（[`src/payloads.ts`](../src/payloads.ts) 的 `// ---- 战斗结算 ----` 那一段注释就是按这三条写的）：
+
+- **① C2S 不带关卡 id。** `OverMainLevel_C2S` 只有 `result=1 / starArray=2(repeated) / fightPar=3`，
+  `OverTrainLevel_C2S` 更狠，只有 `result=1 / fightPar=2` —— **连星级都没有**。id 只能从进本那条
+  `StartSoloBattle(11028)` 记下来：内存里一个 `lastBattle = {levelId, type, uniqueId}`，
+  由 11028 写入、3004/3005 读取。**代价**：假服重启后还没结算的那一场，结算包会被当成"关卡 id=0"，
+  只回包、不写档、不发经验（回包仍 required 合规，客户端不会卡遮罩）。
+- **② 主线与训练的行 id 会重叠**（两边都有 `100101`）。所以**不能"先查 MainLevel 查不到再查 TrainLevel"**，
+  只能按 `CONST_BattleType` 分流：`1=主线 2=训练 3=多人训练 5=爬塔`，`isTrainBattle()` 认 2/3。
+  非训练战斗来的 3005 一律当"认不出关卡"处理。实例 id 也分表取：主线走
+  `MAIN_LEVEL[levelId] → {levelInstanceId, levelStageId}`，训练走 `TrainLevel.newLevelId / stageLevel`。
+  查无此关时**宁回 `result=false`、不带 `trainLevelInfo`**：客户端
+  `OverTrainLevelHandler` 是 `if msg.result then PassTrainLevel(msg.trainLevelInfo)`，
+  回一个 `id=0` 的 info 会让它去查表并崩在面板上。
+- **③ 同一场结算会来好几次。** 客户端 `ClockRequestMsg` 约每 22 s 轮询一次结算，抓到过的真帧序列里
+  同一场先 `result=0`（还没打完/中途退出）后 `result=2`；`BattleResult` 是
+  `0=无 / 1=平 / 2=胜 / 3=负`，**只有 2 算通关**。幂等靠 `uniqueId`：`BattleOver` 的 `uniqueId`
+  由 11028 那一次分配并存在 `lastBattle`，结算只在 `uniqueId ≠ settledUniqueId` 时发经验，
+  发过就记账 —— 否则 `player.exp` 会随轮询次数翻倍。
+  `BattleOver_L2V(13014)` 是客户端**内部**的 Logic→View 通道（战斗结果由客户端本地产生），
+  不经服务端，所以结算是否生效只能看 3004/3005 的日志行。
+
+回包形状（`proto/Battle.proto` + `PveProto`）：
+
+| 命令 | body 用到的字段 | 备注 |
+|---|---|---|
+| `OverMainLevel_S2C` | `uniqueId=1` `battleId=2` `result=3(0/1)` `passTime=6` `playerInfo=7` `mainLevelInfo=8` `firstPass=9` `multipleValue=10` | `stars` 原样回显 C2S 的 `starArray`，并**并进 `levels[id]` 落盘**（取并集排序，重登仍保留历史最好星级）；缺 `playerInfo` → 结算面板 `UIBattleSettlementNewMainLevel:144` 索引 nil、退不出战斗，缺 `uniqueId` → `UIBattleMsg.CheckSameUniqueId` 报"没有结算数据" |
+| `OverTrainLevel_S2C` | `uniqueId=1` `battleId=2` `result=3` `passTime=5` `playerInfo=6` `trainLevelInfo=7` `firstPass=8` `multipleValue=10` | `passTime` 在**字段 5**（主线是 6）；`trainLevelInfo` = `{id=1, todayAttackNum=2, attackNum=3, lastAttackTime=4, passTime=8}`，`attackNum` 是**累计进本次数**、`todayAttackNum` 客户端只 `>0` 判成"今天来过" |
+| 两者共用 `OverSoloPlayerInfo`（`Msg.proto:2575`） | `oldExp=1` `oldLevel=2` `newExp=3` `newLevel=4`（`formationInfos=5` 暂不给） | 是"结算前 / 结算后"两套值；旧实现四个值全填当前档，客户端 `newLevel == oldLevel` 判不出升级 → **等级条不动**（B3 修掉）。四个都是 required，少一个直接不成帧 |
+
+推送：`player.exp/level` 变了发 `Data_Push{playerChangeExpandLvl=1{curLevel,curExp}}`；
+升级附带加体力（`PlayerGrow.addPower`）时同包补 `changeStrength=3{curStrength}`，
+两个都**没**变化就不发 —— 多余的 `changePart` 会让客户端白刷一次属性面板。
+
+**B3 有意没做的事**（做之前先想清楚代价）：进本**不扣体力**（`MainLevel.powerCost` /
+`TrainLevel.strengthCost` 读了但没扣，扣了就回不了退不掉的账）、不发 `leaderExpReward`
+（武将经验是客户端本地结算）、不给首通/三星奖励、任务进度 `bumpTask` 留到 B5。
 
 ### 怎么加一个协议
 
