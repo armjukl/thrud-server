@@ -2613,6 +2613,10 @@ await checkHandler('B5 3303 SubmitTask: 客户端本地算的那类(通关)不�
     const secNow = Math.floor(Date.now() / 1000);
     assert.ok(Math.abs(over[0][1] - secNow) <= 2, `overTask.value 是完成时间(秒), 现在 ${over[0][1]}`);
     assert.equal(num1(taskOfPush(res, 900009), 1), 1001, 'comeFrom=ActionEnum.ComminTask');
+    const dp = taskOfPush(res, DPUSH);
+    const money = dp.filter((f) => f.field === 2).flatMap((f) => kvList(GProto.decodeFields(f.value), 1));
+    assert.ok(money.some(([, itemId]) => itemId === 10), '奖励含贡献点数(10) -> changeMoney=2 要带上, 否则顶栏要等重登才对得上');
+    assert.ok(dp.some((f) => f.field === 10), '奖励含素材 -> changePart=10 要带上, 否则背包数量不动');
   },
   after: (s) => {
     assert.ok(s.tasks.passedTasks[String(MAIN_TASK)] > 0, '领奖要落盘: 重登靠 taskInfo=48 认它');

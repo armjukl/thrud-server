@@ -782,11 +782,30 @@ function weaponInfoFromInst(s: SaveData, w: SaveWeapon): Buffer {
 }
 
 /**
+ * Data_Push 里"数量类"的那两路: changeMoney=2(货币) / changePart=10(背包素材).
+ * 凡是动过 eff.money 或 eff.items 的操作都得带上它, 否则客户端的顶栏与背包要等下次登录才对得上数.
+ * 金币(id 10 之类)在 Items_Xls 里 itemType=1, 只能走 MoneyPart; 硬塞进 Part 客户端没有这行.
+ */
+function moneyAndPartParts(s: SaveData, eff: Effects): Buffer[] {
+  const money: number[] = [];
+  const items: number[] = [];
+  for (const id of [...new Set([...eff.money, ...eff.items])]) {
+    (itemType(id).type === ITEMTYPE.Money ? money : items).push(id);
+  }
+  const out: Buffer[] = [];
+  if (money.length) {
+    out.push(pb.bfield(2, pb.concat(...money.map((id) =>
+      pb.bfield(1, pb.concat(pb.vfield(1, Math.floor(countItem(s, id))), pb.vfield(2, id)))))));
+  }
+  const shown = items.filter((id) => ITEM_VALID.has(id));
+  if (shown.length) out.push(pb.bfield(10, pb.concat(...shown.map((id) => pb.bfield(1, partBody(id, countItem(s, id)))))));
+  return out;
+}
+
+/**
  * 武装写操作后刷新面板的那条 Data_Push:
  *   weaponChanged=7 刷武装本身, leaderAttrChanged=5 刷穿戴者(精炼/突破都改他的属性),
- *   changeMoney=2 / changePart=10 刷顶栏货币与背包素材 —— 扣了东西不推这两路,
- *   客户端的数量要等下次登录才对得上.
- * 金币(id 10 之类)在 Items_Xls 里 itemType=1, 只能走 MoneyPart; 硬塞进 Part 客户端没有这行.
+ *   货币与素材见 moneyAndPartParts.
  */
 function weaponDataPush(s: SaveData, w: SaveWeapon | null, eff: Effects): Buffer {
   const parts: Buffer[] = [];
@@ -795,17 +814,7 @@ function weaponDataPush(s: SaveData, w: SaveWeapon | null, eff: Effects): Buffer
     const c = w.leaderId > 0 ? s.characters.find((x) => x.id === w.leaderId) : undefined;
     if (c) parts.push(pb.bfield(5, pb.bfield(1, leaderInfo(s, c))));
   }
-  const money: number[] = [];
-  const items: number[] = [];
-  for (const id of [...new Set([...eff.money, ...eff.items])]) {
-    (itemType(id).type === ITEMTYPE.Money ? money : items).push(id);
-  }
-  if (money.length) {
-    parts.push(pb.bfield(2, pb.concat(...money.map((id) =>
-      pb.bfield(1, pb.concat(pb.vfield(1, Math.floor(countItem(s, id))), pb.vfield(2, id)))))));
-  }
-  const shown = items.filter((id) => ITEM_VALID.has(id));
-  if (shown.length) parts.push(pb.bfield(10, pb.concat(...shown.map((id) => pb.bfield(1, partBody(id, countItem(s, id)))))));
+  parts.push(...moneyAndPartParts(s, eff));
   return pb.concat(...parts);
 }
 
@@ -1260,11 +1269,14 @@ function hangUpSweepS2C(req: GsRequest): GsResult {
 // ShowItemPushHandler 对这两个值没有专门分支 -> 落到通用"获得物品"弹窗, 正是我们要的样子.
 const ACTION_TASK = 1001, ACTION_DAY_POINT = 1002;
 
-/** 领奖后的两条推送: 顶栏数值(发了经验/体力才发) + 奖励展示. ShowItem_Push 不能走 replenish 通道. */
+/** 领奖后的两条推送: 顶栏数值(经验/体力/货币/素材, 有变动才发) + 奖励展示. ShowItem_Push 不能走 replenish 通道. */
 function taskRewardPushes(s: SaveData, eff: Effects, rewards: RewardItem[], comeFrom: number): Array<[number, Buffer]> {
   const out: Array<[number, Buffer]> = [];
+  const parts: Buffer[] = [];
   const push = playerExpPush(s, eff);
-  if (push) out.push([CMD.DataPush, push]);
+  if (push) parts.push(push);
+  parts.push(...moneyAndPartParts(s, eff));
+  if (parts.length) out.push([CMD.DataPush, pb.concat(...parts)]);
   if (rewards.length) {
     out.push([CMD.ShowItemPush, pb.concat(
       pb.vfield(1, comeFrom),
