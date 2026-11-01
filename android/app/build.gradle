@@ -1,0 +1,66 @@
+plugins {
+    id 'com.android.application'
+}
+
+// nodejs-mobile 解包位置: -Psld.nodejsMobile=/别的路径 可覆盖。
+def nodejsMobile = (findProperty('sld.nodejsMobile') ?: '/home/tmp/nodejs-mobile')
+def nodeAbi = 'arm64-v8a'
+
+android {
+    namespace 'com.sld.offline.server'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.sld.offline.server'
+        versionCode 1
+        versionName '0.1'
+        minSdk 21
+        targetSdk 34
+        ndkVersion '26.3.11579264'
+        ndk { abiFilters nodeAbi }
+        externalNativeBuild {
+            cmake {
+                // c++_shared: libnode.so 的 DT_NEEDED 要 libc++_shared.so, 交给 AGP 从 NDK 一起打进包
+                arguments '-DANDROID_STL=c++_shared',
+                        "-DNODEJS_INCLUDE=${nodejsMobile}/include/node",
+                        "-DNODEJS_LIBNODE=${nodejsMobile}/bin/${nodeAbi}/libnode.so"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
+
+    // bin/<abi>/libnode.so 已经排成 jniLibs 要的层级, 直接指过去, 仓库里不落第二份 62MB。
+    sourceSets {
+        main { jniLibs.srcDirs += new File(nodejsMobile as String, 'bin').path }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // 假服靠 require 路径与动态 import 起服务, 混淆只会把 JS 侧的字符串和 Java 反射一起磨掉
+            shrinkResources false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// 缺料的时候让 Gradle 说人话("缺 libnode.so"), 而不是等到 CMake 报"找不到 -lnode"。
+def checkNode = tasks.register('checkNodejsMobile') {
+    def so = new File(new File(nodejsMobile as String, 'bin'), "${nodeAbi}/libnode.so")
+    def hdr = new File(new File(nodejsMobile as String, 'include'), 'node/node.h')
+    doLast {
+        if (!so.exists()) throw new GradleException("缺 ${so} —— 把 nodejs-mobile-android.zip 解到 ${nodejsMobile}")
+        if (!hdr.exists()) throw new GradleException("缺 ${hdr} —— 同上, include/node 也要解出来")
+    }
+}
+tasks.named('preBuild') { dependsOn checkNode }

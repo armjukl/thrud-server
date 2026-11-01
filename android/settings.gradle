@@ -14,5 +14,6 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = 'sld-offline-apk'
-// 探针模块先落地(它只证明 libnode 能跑); 正规壳在 :app, 下一步加进来。
+// :probe 只证一件事(libnode 在这台机器上跑不跑得起来), :app 是真壳: 前台服务 + WebView 控制页。
 include ':probe'
+include ':app'

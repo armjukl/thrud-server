@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 明文只放行回环: 管理页是 http://127.0.0.1:19080, WebView 在 targetSdk 28+ 默认不许裸奔。
+     其余一律明文封死 —— 这台机器上跑的东西不该有任何一出网的 HTTP。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
