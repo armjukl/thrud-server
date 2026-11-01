@@ -175,6 +175,64 @@ await check('端到端: raw UDP 模式同样可派发', async () => {
   gw.stop();
 });
 
+// ---------------------------------------------------------------- 3b. 生命周期(安卓侧的前提)
+// APK 里的开关就是 createOfflineServer 的 start/stop, 而 node::Start 起来的 VM 不会跟着
+// 服务重启 —— 所以"关"必须是真关: 端口释放、对端清零、停后一个包都不许再被处理。
+// 更要命的是模块级注册: 每开一次多挂一个兜底记录器, 同一报文就落两遍盘, 比起不来难查得多。
+await check('offline: start/stop 三轮 —— 真停真起、兜底记录不翻倍、停后不收包', async () => {
+  const { createOfflineServer } = await import(`../${DIST}/offline.js`);
+  const { handlerIds } = await import(`../${DIST}/gateway.js`);
+  const hrBackup = fs.existsSync(config.paths.headerRule) ? fs.readFileSync(config.paths.headerRule) : null;
+  fs.mkdirSync(path.dirname(config.paths.headerRule), { recursive: true });
+  fs.writeFileSync(config.paths.headerRule, JSON.stringify(rule.name));
+  const logFile = path.join(config.paths.logs, 'server.log');
+  const txt = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '');
+  const unknowns = () => (txt().match(/未注册 msgId=990808/g) || []).length;
+  const boots = () => (txt().match(/Thrud\(sld\) 离线服务端 \| resVersion=/g) || []).length;
+  const UMSG = 990808;
+  const push = (sn, note) => encodeSegment({
+    conv: 0x2468, cmd: CMD.PUSH, frg: 0, wnd: 32, ts: sn * 10, sn, una: 0, data: frameOf(UMSG, Buffer.from(note)),
+  });
+  const cli = dgram.createSocket('udp4');
+  await new Promise((r) => cli.bind(0, '127.0.0.1', r));
+  const sendTo = (seg) => new Promise((r) => cli.send(seg, config.gateway.port, '127.0.0.1', r));
+  let H0 = 0; // 第一轮 start 之后再取: 默认注册(wireDefaults 的 on(0))就是在 start 里做的
+  const srv = createOfflineServer();
+  try {
+    const b0 = boots();
+    const u0 = unknowns();
+    for (let r = 1; r <= 3; r++) {
+      await srv.start();
+      assert.equal(srv.running, true, `第 ${r} 轮 start 后 running 要为 true`);
+      if (r === 1) {
+        assert.ok(handlerIds().includes(0), 'start 要把默认装配(msgId 0 探活)挂上');
+        H0 = handlerIds().length;
+      }
+      assert.equal(boots(), b0 + r, `第 ${r} 轮启动日志只该多 1 行 —— 多行说明 start 被重复装配`);
+      await sendTo(push(0, `round${r}`));
+      await wait(300);
+      assert.equal(unknowns(), u0 + r, `第 ${r} 轮的未注册包应恰好记 1 条(累计 ${r}), 翻倍=兜底记录器随重启越挂越多`);
+      await srv.stop();
+      assert.equal(srv.running, false, `第 ${r} 轮 stop 后 running 要为 false`);
+      await sendTo(push(1, 'after-stop'));
+      await wait(250);
+      assert.equal(unknowns(), u0 + r, 'stop 之后一个包都不许再被处理(端口没真关)');
+      // 停服后 HTTP 侧也该彻底断: 再连一次应当失败
+      await assert.rejects(fetch(`http://127.0.0.1:${config.http.port}/server/cdnData`),
+        `第 ${r} 轮 stop 后 HTTP 端口必须已释放`);
+    }
+    assert.equal(handlerIds().length, H0, '三轮启停不该往 handlers 里多塞东西');
+    await srv.start();
+    assert.deepEqual(srv.status().peers, [], 'status().peers 是网关对端表, 供管理页显示');
+    await srv.stop();
+  } finally {
+    await srv.stop();
+    cli.close();
+    if (hrBackup) fs.writeFileSync(config.paths.headerRule, hrBackup);
+    else fs.rmSync(config.paths.headerRule, { force: true });
+  }
+});
+
 // ---------------------------------------------------------------- 4. HTTP 桩
 await check('HTTP 桩: 服务器列表/版本/登录/公告/未实现端点', async () => {
   const { server } = createHttpServer();
