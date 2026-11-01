@@ -81,6 +81,33 @@ daemon 与并行；命令行再带 `--no-daemon`。任何"gradle 构建中途被
 工具链版本（升之前知道自己在动什么）：Gradle 8.7 / AGP 8.5.2 / JDK 17 / compileSdk=targetSdk 34 /
 minSdk 21 / NDK 26.3.11579264 / CMake 3.22.1 / 纯 Java（无 Kotlin）/ `abiFilters 'arm64-v8a'`。
 
+### 2.1 改了假服代码之后重出 APK（日常路径）
+
+**先提交，再打包。** `buildCode = <package.version>-g<git rev-parse --short HEAD>`，未提交的改动不改号；
+而同一 `buildCode` 目录是**覆盖式解包、不删多余旧文件**（跨版才整目录删旧的，见 `NodeBridge.prepare`），
+所以改了名/删了的模块会在手机上留着 —— 想干净换代就得让号变，也就是先 commit。
+
+```bash
+cd /home/sld/offline-server
+git add -A && git commit -m '<scope>: <一句话>'      # 号要变, 不然手机上是旧码目录
+npm run typecheck && npm run selftest                # 老规矩: 改完先过 PC 侧
+npm run build:cjs && npm run selftest:cjs            # CJS 产物单独再验一遍(Node18 语义)
+node tools/pack_nodejs.mjs --check                   # 只核产物树, 不重写
+node tools/pack_nodejs.mjs                           # -> assets/{code,seed}
+GRADLE_USER_HOME=/home/tmp/gradle-home /home/tmp/gradle/gradle-8.7/bin/gradle \
+  --no-daemon -p android :app:assembleDebug
+cp android/app/build/outputs/apk/debug/app-debug.apk /home/sld/apkbuild/sld-offline-server-v2.apk
+md5sum /home/sld/apkbuild/*.apk                      # 装机时报哪个包, 靠这个对
+```
+
+- **只改了 hook 脚本**（`frida/hook_gadget_all.js`）不用重编 APK：`cd frida && ./make_variants.sh`，
+  再把两份变体 `cp` 进 `apkbuild/gadget-{local,tunnel}/hook_redirect_trust.js`（文件名不许动）。
+- **升级不会动玩家的档**：`slddata/` 由 `seedOnce` 保证"缺了才铺"，新版 APK 里那份更新的 `save.json`
+  铺不进去。要把 PC 上推进的档带到手机，两条路：管理页存档标签贴 JSON 保存，或者先把 `slddata/` USB
+  拉走备份、删掉 `data/save.json{,.bak}` 再冷启动让 seed 重铺。
+- **别覆盖掉能装的那一份**（`-v1` 留着回退），也别卸载重装 —— 卸载连 `Android/data/com.sld.offline.server/`
+  一起删，档就没了。同机 debug 签名（`~/.android/debug.keystore`）才能覆盖安装。
+
 ---
 
 ## 3. 运行时布局：铺盘铁律
@@ -213,6 +240,15 @@ tables=36张/25193行/186ms  modules=ok/8  rssMb=228  heapMb=56  sysMb=5616/1017
 （8 个模块全 require + 整表一次展开且都持着），真服是惰性 parse 所以稳态更低；5.6 GB 的机器上不是约束。
 2 GB 那条约束是构建机，不是手机。
 
+**第 2 条已过（2026-11-01）**：用户报"可以用了"，即壳起服 → 游戏经 `127.0.0.1` 登进大厅并打得动关卡
+（443→9443 的 sockaddr 改写生效）。同一次反馈里先说"**关卡进度像是清零了**"、随后"**重进就好了**" ——
+盘上核过是**假警报**：`data/save.json` 与 APK 铺盘的 seed 逐键对得上（`levels` 1915 条、每条 `[1,2,3]`，
+除 `signin` 外无差异），是客户端 `LevelDataMgr` 要重登才把 `mainLevelInfo` 铺满，不是服务端丢档。
+**这条对 B3 有直接意义**：通关后大厅星级/章节的即时刷新依赖结算包里的 `mainLevelInfo`
+（[`src/payloads.ts`](../src/payloads.ts) 的 `overMainLevelS2C`），下次真机轮就是看**不重登**会不会自己亮。
+
+第 3/4/5 条（真停真起 / 改档不重登生效 / 息屏 5 分钟）尚未收到反馈。
+
 失败时先回 §6 第 3 步核 `gadget.log` 那两行，再回 §5 看通知栏是不是"起不来: …"——
 **这两处分别是"客户端没连过来"和"服务端没起来"的分界**，别看现象猜。
 
@@ -227,7 +263,23 @@ tables=36张/25193行/186ms  modules=ok/8  rssMb=228  heapMb=56  sysMb=5616/1017
 - 包内 JS 图在 node18 上 require 干净（探针的 `modules=ok/8`），但**混淆/release 构建没测**：
   `minifyEnabled false` 是刻意的，假服靠 require 路径与动态 import 起服务。
 
-## 9. 备选路线（为什么没走）
+## 10. 迭代线：以后都在 `apk-server` 上改
+
+本文档所属的 APK 路线与 B 组（假 GS 对齐）**共用一条线**，就是 `apk-server`。理由与现状（`git rev-list --count` 实测，2026-11-01）：
+
+| 分支 | HEAD | 与 `apk-server` 的关系 |
+|---|---|---|
+| `apk-server` | `5bc2c64` | **迭代线**：APK 步0-7 与 B 组各档都在这条上 |
+| `gs-parity` | `92864f5` | 已**整条并入**（`merge-base --is-ancestor` 为真），不再往上提交 |
+| `master` | `381b037` | 也是严格祖先，落后 34 个提交；B 组之前的老基线，只作历史参照 |
+| `channel-1428` | `9a2bb22` | **未并入、也没废弃** —— 1 个提交（渠道包 1428 一套 + `SLD_NOW` 时间仿真 + `data/save.nearme.json` + `tools/convert_save.py`），改了 `config.ts/save.ts/payloads.ts/http.ts/selftest.mjs`，其中 `src/data/tables.ts` 那部分已被 A2 的整表管线取代。**要不要 cherry 进来是个未决问题**，动它之前先想清楚冲突面 |
+
+日常顺序照本文 §2.1：改 `src/` → `typecheck` + `selftest`（ESM 产物）
+→ `build:cjs` + `SLD_DIST=dist-cjs /home/tmp/node18/bin/node test/selftest.mjs`（APK 用的是这份 CJS 产物，
+**两条都得绿**）→ 提交 → `pack:android` → gradle。**先提交后打包**，`buildCode` 里带 `git rev-parse --short HEAD`，
+不提交就打包会让手机上留着同名的旧代码。
+
+## 11. 备选路线（为什么没走）
 
 不用 Node、把协议重写成纯 Java/Kotlin：省掉 49 MB `.so`、常驻内存再降一截，但要**手写第二份字节实现**——
 上机验证过的 4,923 行协议代码得重做一遍并重新和真机对齐，风险全在协议侧而不是运行时侧。
