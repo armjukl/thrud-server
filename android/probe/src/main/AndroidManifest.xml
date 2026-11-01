@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 探针本身不联网, 但要 bind 127.0.0.1 的 UDP 口: 没有这条权限时某些 ROM 的
+         防火墙会把 bind 拦掉, 那会被误读成"libnode 的 dgram 坏了"。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="false"
+        android:label="sld 探针"
+        android:theme="@android:style/Theme.Material.Light">
+        <activity
+            android:name=".ProbeActivity"
+            android:exported="true"
+            android:label="sld 探针">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

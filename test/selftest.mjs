@@ -502,6 +502,48 @@ await check('pack+node18: 按手机布局起假服(铺盘/管理面/HTTPS/存档
   }
 });
 
+// 探针脚本(probe.js)是"手机上看那几行字"的唯一凭据, 所以它自己也得有离线判据:
+// 按探针布局铺一份 assets, 用 node18(和 libnode 同版本)真跑一遍, 逐行核对屏上该出现什么。
+await check('probe: 探针脚本在 node18 上跑出预期读数(CustomEvent/dgram/整表/依赖图)', async () => {
+  const assets = path.join(SIM, 'probe-assets');
+  const out = path.join(SIM, 'probe-out.txt');
+  const pack = path.join(ROOT, 'tools', 'pack_nodejs.mjs');
+  const main = path.join(ROOT, 'android', 'probe.js');
+  fs.rmSync(assets, { recursive: true, force: true });
+  fs.rmSync(out, { force: true });
+  await exec(process.execPath, [pack, '--main', main, '--out', assets]);
+  await exec(process.execPath, [pack, '--main', main, '--out', assets, '--check']);
+  const bc = JSON.parse(readFile(path.join(assets, 'code', 'manifest.json')).toString('utf8')).buildCode;
+  const entry = path.join(assets, 'code', bc, 'main.js');
+  assert.equal(readFile(entry).toString('utf8'), readFile(main).toString('utf8'), '--main 要把探针脚本铺成 code/<bc>/main.js');
+  if (!fs.existsSync(NODE18)) {
+    console.log(`  · 没有 node18(${NODE18}), 跳过实跑探针, 只断言产物树`);
+    fs.rmSync(SIM, { recursive: true, force: true });
+    return;
+  }
+  const child = spawn(NODE18, [entry, '--out', out], { stdio: ['ignore', 'ignore', 'pipe'] });
+  let err = '';
+  child.stderr.on('data', (c) => { err += c; });
+  const deadline = Date.now() + 40000;
+  while ((!fs.existsSync(out) || readFile(out).toString('utf8').indexOf('hold=') < 0) && Date.now() < deadline && child.exitCode === null) await wait(100);
+  const text = fs.existsSync(out) ? readFile(out).toString('utf8') : '';
+  try {
+    const kv = Object.fromEntries(text.trim().split('\n').map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+    assert.equal(child.exitCode, null, `探针末尾的定时器该把进程钉住(node::Start 会 exit()): ${text}\nstderr=${err}`);
+    assert.equal(kv.ok, '1', `探针该跑到 ok=1:\n${text}\nstderr=${err}`);
+    assert.equal(kv.node, 'v18.20.4', '实跑必须与 nodejs-mobile 同版本, 否则下面的读数不算数');
+    assert.equal(kv.CustomEvent, 'undefined', 'Node 18 没有全局 CustomEvent —— kcp.ts/gateway.ts 因此用 node:events');
+    assert.match(kv.dgram, /旧socket复用=ERR_SOCKET/, '已 close 的 socket 再 bind 要真的抛, 这条是"每次 start 换新 socket"的依据');
+    assert.match(kv.dgram, /新socket占回同端口=ok/, '换新 socket 占回同端口必须成, 否则假服重启起不来');
+    assert.ok(Number((kv.tables.match(/\/(\d+)行/) || [])[1]) > 20000, `整表要真展开(25193 行量级), 读到 ${kv.tables}`);
+    assert.equal(kv.modules, 'ok/8', `假服的依赖图在 CJS 产物里要能全 require: ${text}`);
+    assert.ok(Number(kv.rssMb) > 40 && Number(kv.rssMb) < 400, `全表展开后的 RSS 该在合理区间, 读到 ${kv.rssMb}MB`);
+  } finally {
+    if (child.exitCode === null) child.kill('SIGKILL');
+    fs.rmSync(SIM, { recursive: true, force: true }); // probe-assets 与 probe-out.txt 都在 SIM 下
+  }
+});
+
 // ---------------------------------------------------------------- 4. HTTP 桩
 await check('HTTP 桩: 服务器列表/版本/登录/公告/未实现端点', async () => {
   const { server } = createHttpServer();

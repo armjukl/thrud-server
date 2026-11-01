@@ -25,9 +25,11 @@ frida/frpc-sld.toml
 # 安卓工程: 工具链与本地产物都不入库(libnode.so / 13MB 整表产物 / 解出来的 seed)
 .gradle/
 android/**/build/
+android/**/.cxx/
 android/local.properties
 android/app/libnode/
 android/app/src/main/jniLibs/**/*.so
-android/app/src/main/assets/code/
-android/app/src/main/assets/seed/
+# 规则按模块通配: :probe 与 :app 的 assets/code(13MB 整表) 与 assets/seed 都由 pack_nodejs 现铺
+android/*/src/main/assets/code/
+android/*/src/main/assets/seed/
 apk/

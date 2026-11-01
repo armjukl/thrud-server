@@ -1,0 +1,4 @@
+// 顶层只声明插件版本、不 apply: apply 放在各模块里, 这样 :probe 和 :app 可以各自决定要不要 CMake。
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+}
