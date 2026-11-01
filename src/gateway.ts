@@ -70,7 +70,13 @@ export class Peer {
 
   write(buf: Buffer): void {
     this.stats.sent++;
-    this.gw.socket.send(buf, this.rinfo.port, this.rinfo.address, () => {});
+    // 停服与在途回包会撞车: socket close 后 send 是同步抛 ERR_SOCKET_DGRAM_NOT_RUNNING,
+    // 对端收不到而已 —— 不该冒成 handler 异常把"正常停服"写成一条 error 日志。
+    try {
+      this.gw.socket.send(buf, this.rinfo.port, this.rinfo.address, () => {});
+    } catch (e) {
+      log("debug", "gateway", `${this.id} 丢弃出站包(网关已停): ${(e as Error).message}`);
+    }
   }
 
   snapshot(): Record<string, unknown> {
@@ -170,7 +176,16 @@ export function createGateway(overrides: Partial<GatewayCfg> = {}): Gateway {
     r(socket);
   }));
   gw.stop = () => {
-    for (const p of gw.peers.values()) p.session?.close();
+    // 真关: 会话定时器与监听、对端表、socket 一次清干净, 不留"关了还在收包"的尾巴.
+    // close() 之后的 dgram.Socket 不能再用(Node 18 实测 ERR_SOCKET_DGRAM_NOT_RUNNING),
+    // 所以重启走 offline.ts 的"每次新建网关"。
+    for (const p of gw.peers.values()) {
+      p.session?.close();
+      p.session?.removeAllListeners();
+    }
+    gw.peers.clear();
+    socket.removeAllListeners("message");
+    socket.removeAllListeners("error");
     socket.close();
   };
   return gw;
