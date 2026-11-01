@@ -3,46 +3,26 @@
 //
 //   node dist/index.js
 //   SLD_NET_MODE=kcp SLD_LOG_LEVEL=debug node dist/index.js
-import { config } from "./config.js";
-import { log, record, summary, hex } from "./logger.js";
-import { createGateway, onUnknown, on, handlerIds } from "./gateway.js";
-import { createHttpServer } from "./http.js";
+//
+// 装配与启停都在 offline.ts(PC 常驻、管理面开关、APK 里的 main.js 走同一条路),
+// 这里只负责"起进程 + Ctrl-C 收尾"。顶层 await 在 CommonJS 产物里不允许(TS1378), 故包一层。
+import { log, summary } from "./logger.js";
+import { createOfflineServer } from "./offline.js";
 
-const gw = createGateway();
-const { server } = createHttpServer();
-
-// 目前没有任何"已确认"的 msgId —— 消息 ID 表在加密的 toLua 里, 必须脱壳或抓包才能拿到.
-// 所以这里只挂兜底记录器: 统计 msgId 频次 + 存原始字节, 抓到包后逐条 on(<id>, handler).
-const seen: Record<string, { count: number; firstBytes: string; bytes: number }> = {};
-onUnknown(({ id, msgId, seq, body }) => {
-  const key = String(msgId ?? "unframed");
-  seen[key] = { count: (seen[key]?.count ?? 0) + 1, firstBytes: hex(body, 32), bytes: body.length };
-  record.json("unknown-msgids.json", seen);
-  log("warn", "dispatch", `未注册 msgId=${key} seq=${seq} ${body.length}B peer=${id} ${hex(body, 48)}`);
-});
-
-// msgId 0 当作探活: 回空包保持连接 (真实心跳 ID 待确认)
-on(0, (frame, peer) => {
-  log("debug", "heartbeat", `${peer.id} seq=${frame.seq}`);
-  return [0, Buffer.alloc(0)];
-});
-
-// 顶层 await 在 CommonJS 产物里是 TS1378, 而 nodejs-mobile 只吃 CJS —— 包一层异步入口, ESM 下等价。
 async function boot(): Promise<void> {
-  await gw.start();
-  server.listen(config.http.port, config.http.host, () => {
-    log("info", "http", `HTTP 监听 ${config.tls.enabled ? "https" : "http"}://${config.http.host}:${config.http.port} (SDK 登录/服务器列表/假 CDN)`);
+  const srv = createOfflineServer();
+  await srv.start();
+  process.on("SIGINT", () => {
+    log("info", "boot", `退出 ${JSON.stringify(summary())}`);
+    const hardExit = setTimeout(() => process.exit(0), 1500); // 收尾卡住也要让 Ctrl-C 有效
+    void srv.stop().then(() => {
+      clearTimeout(hardExit);
+      process.exit(0);
+    });
   });
-
-  log("info", "boot", `Thrud(sld) 离线服务端 | resVersion=${config.server.resVersion} build=${config.server.buildVersion} 渠道=${config.server.channel}`);
-  log("info", "boot", `已注册 msgId 处理器: ${handlerIds().join(", ") || "(仅兜底记录)"} | 落盘 ${summary().capture}`);
-  log("info", "boot", "让客户端过来: 见 docs/README.md (hosts/代理/服务器列表改写 三条路)");
 }
-void boot();
 
-process.on("SIGINT", () => {
-  log("info", "boot", `退出 ${JSON.stringify(summary())}`);
-  gw.stop();
-  server.close();
-  process.exit(0);
+boot().catch((e: Error) => {
+  log("error", "boot", `起不来: ${e.stack || e.message}`);
+  process.exit(1);
 });
