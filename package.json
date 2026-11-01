@@ -8,6 +8,7 @@
   "bin": { "sld-offline-server": "dist/index.js" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist-cjs/package.json', JSON.stringify({type:'commonjs'},null,2))\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
     "gate": "node dist/index.js",

@@ -1,6 +1,7 @@
 # 依赖 / 构建产物
 node_modules/
 dist/
+dist-cjs/
 *.tsbuildinfo
 
 # 运行时日志 / 抓包 / 派生资源（都可重建，不进版本库）

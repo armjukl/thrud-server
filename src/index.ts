@@ -27,14 +27,18 @@ on(0, (frame, peer) => {
   return [0, Buffer.alloc(0)];
 });
 
-await gw.start();
-server.listen(config.http.port, config.http.host, () => {
-  log("info", "http", `HTTP 监听 ${config.tls.enabled ? "https" : "http"}://${config.http.host}:${config.http.port} (SDK 登录/服务器列表/假 CDN)`);
-});
+// 顶层 await 在 CommonJS 产物里是 TS1378, 而 nodejs-mobile 只吃 CJS —— 包一层异步入口, ESM 下等价。
+async function boot(): Promise<void> {
+  await gw.start();
+  server.listen(config.http.port, config.http.host, () => {
+    log("info", "http", `HTTP 监听 ${config.tls.enabled ? "https" : "http"}://${config.http.host}:${config.http.port} (SDK 登录/服务器列表/假 CDN)`);
+  });
 
-log("info", "boot", `Thrud(sld) 离线服务端 | resVersion=${config.server.resVersion} build=${config.server.buildVersion} 渠道=${config.server.channel}`);
-log("info", "boot", `已注册 msgId 处理器: ${handlerIds().join(", ") || "(仅兜底记录)"} | 落盘 ${summary().capture}`);
-log("info", "boot", "让客户端过来: 见 docs/README.md (hosts/代理/服务器列表改写 三条路)");
+  log("info", "boot", `Thrud(sld) 离线服务端 | resVersion=${config.server.resVersion} build=${config.server.buildVersion} 渠道=${config.server.channel}`);
+  log("info", "boot", `已注册 msgId 处理器: ${handlerIds().join(", ") || "(仅兜底记录)"} | 落盘 ${summary().capture}`);
+  log("info", "boot", "让客户端过来: 见 docs/README.md (hosts/代理/服务器列表改写 三条路)");
+}
+void boot();
 
 process.on("SIGINT", () => {
   log("info", "boot", `退出 ${JSON.stringify(summary())}`);
