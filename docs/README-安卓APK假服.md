@@ -35,7 +35,7 @@ gadget 那份 hook 脚本已经 hook 了 `connect()`，顺手把 `127.0.0.1:443`
 | 模块 | 包名 | 产物 | 装机大小 | 干什么 |
 |---|---|---|---|---|
 | `:probe` | `com.sld.offline.probe` | `probe/build/outputs/apk/debug/probe-debug.apk` | 18,725,472 B | **路线判生死**：屏上直接写 `process.versions` / `typeof CustomEvent` / dgram 复用结论 / 36 张表展开峰值 RSS / 8 个模块能否 require。✅ **11-01 真机全绿**（读数在 §7） |
-| `:app` | `com.sld.offline.server` | `app/build/outputs/apk/debug/app-debug.apk` | 19,841,945 B | 正式壳：前台服务跑假服 + WebView 管理页 |
+| `:app` | `com.sld.offline.server` | `app/build/outputs/apk/debug/app-debug.apk` | 19,842,027 B（v3，B4 后；v2 是 19,841,945 B，82 条自检那版） | 正式壳：前台服务跑假服 + WebView 管理页 |
 
 体积几乎全是 `libnode.so`（发布件 62,475,584 B，AGP 的 `stripDebugSymbols` 剥到 49.5 MB，再 deflate 进包）。
 装机用的落在 **`/home/sld/apkbuild/`**，一份一代、按 `-vN` 编号（不许覆盖旧的，见 §2.1）：
@@ -45,6 +45,7 @@ gadget 那份 hook 脚本已经 hook 了 `connect()`，顺手把 `127.0.0.1:443`
 | `sld-offline-probe-v1.apk` | `744b618a4a14…` | 探针（真机读数见 §7 第 1 条） |
 | `sld-offline-server-v1.apk` | `aa940f9ae062…` | 壳 + `buildCode 0.1.0-ge41e93f`（B2 后的假服，真机验收第 2 条就是它） |
 | `sld-offline-server-v2.apk` | `d56fd2bfb904…` | 壳 + `buildCode 0.1.0-g20902ab`（**B3 通关结算**：通关发导师经验、统御等级自然涨、推 `playerChangeExpandLvl`） |
+| `sld-offline-server-v3.apk` | `11b477ec5623…` | 壳 + `buildCode 0.1.0-gd9aff6f`（**B4 挂机六条**：外派会话真落盘、到点翻状态、领奖真 roll；顺手修 3004"认不出关卡还回 result=1"的崩点） |
 
 同目录还有 `gadget-local/` 与 `gadget-tunnel/` 两份就绪 hook 脚本（按设备上的文件名叫，见 §6）。
 `res/apk/` 只放游戏包，别混（AGENTS.md 那条"APK 不碰、不重签"说的是游戏 APK，我们的产物也不该去蹭它）。
