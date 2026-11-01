@@ -435,6 +435,14 @@ await check('pack+node18: 按手机布局起假服(铺盘/管理面/HTTPS/存档
   assert.deepEqual(seededFiles.map((f) => fs.existsSync(path.join(seedDir, f))), seededFiles.map(() => true), 'seed 清单要齐');
   const junk = ['data/save.json.bak', 'data/logs', 'data/capture', 'data/admin.token'].filter((f) => fs.existsSync(path.join(seedDir, f)));
   assert.deepEqual(junk, [], `seed 里混进运行垃圾: ${junk}`);
+  // code/ 只许留当前 buildCode: manifest 只认一个号, 旧的是纯粹的死重量(v1 那次真留了 13 MB)
+  const stale = path.join(assets, 'code', '0.0.0-gSTALE');
+  fs.mkdirSync(stale, { recursive: true });
+  await assert.rejects(exec(process.execPath, [pack, '--out', assets, '--check']), /buildCode 残留/,
+    'code/ 里留着别的 buildCode 时 --check 必须不合格');
+  await exec(process.execPath, [pack, '--out', assets]); // 重铺一次, 旧的应当被整目录换掉
+  assert.deepEqual(fs.readdirSync(path.join(assets, 'code')).sort(), ['manifest.json', bc].sort(),
+    'pack 后 code/ 只该有 manifest.json + 当前 buildCode');
   if (!fs.existsSync(NODE18)) {
     console.log(`  · 没有 node18(${NODE18}), 跳过实启, 只断言产物树`);
     return;

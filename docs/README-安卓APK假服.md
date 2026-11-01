@@ -35,16 +35,22 @@ gadget 那份 hook 脚本已经 hook 了 `connect()`，顺手把 `127.0.0.1:443`
 | 模块 | 包名 | 产物 | 装机大小 | 干什么 |
 |---|---|---|---|---|
 | `:probe` | `com.sld.offline.probe` | `probe/build/outputs/apk/debug/probe-debug.apk` | 18,725,472 B | **路线判生死**：屏上直接写 `process.versions` / `typeof CustomEvent` / dgram 复用结论 / 36 张表展开峰值 RSS / 8 个模块能否 require。✅ **11-01 真机全绿**（读数在 §7） |
-| `:app` | `com.sld.offline.server` | `app/build/outputs/apk/debug/app-debug.apk` | 18,730,110 B | 正式壳：前台服务跑假服 + WebView 管理页 |
+| `:app` | `com.sld.offline.server` | `app/build/outputs/apk/debug/app-debug.apk` | 19,841,945 B | 正式壳：前台服务跑假服 + WebView 管理页 |
 
 体积几乎全是 `libnode.so`（发布件 62,475,584 B，AGP 的 `stripDebugSymbols` 剥到 49.5 MB，再 deflate 进包）。
-装机用的两份落在 **`/home/sld/apkbuild/`**：`sld-offline-probe-v1.apk`（md5 `744b618a4a14…`）、
-`sld-offline-server-v1.apk`（md5 `aa940f9ae062…`），和上面的 build 产物逐字节一致。
+装机用的落在 **`/home/sld/apkbuild/`**，一份一代、按 `-vN` 编号（不许覆盖旧的，见 §2.1）：
+
+| 文件 | md5 | 里面是什么 |
+|---|---|---|
+| `sld-offline-probe-v1.apk` | `744b618a4a14…` | 探针（真机读数见 §7 第 1 条） |
+| `sld-offline-server-v1.apk` | `aa940f9ae062…` | 壳 + `buildCode 0.1.0-ge41e93f`（B2 后的假服，真机验收第 2 条就是它） |
+| `sld-offline-server-v2.apk` | `d56fd2bfb904…` | 壳 + `buildCode 0.1.0-g20902ab`（**B3 通关结算**：通关发导师经验、统御等级自然涨、推 `playerChangeExpandLvl`） |
+
 同目录还有 `gadget-local/` 与 `gadget-tunnel/` 两份就绪 hook 脚本（按设备上的文件名叫，见 §6）。
 `res/apk/` 只放游戏包，别混（AGENTS.md 那条"APK 不碰、不重签"说的是游戏 APK，我们的产物也不该去蹭它）。
 
 先装 probe。它证明的是"这台机器的 arm64 libnode 能不能跑起来 + 内存够不够"，
-这两件事错了，后面整条 nodejs-mobile 路线都要推翻（备选是无 Node 的重写，见 §9）。
+这两件事错了，后面整条 nodejs-mobile 路线都要推翻（备选是无 Node 的重写，见 §11）。
 
 ---
 
@@ -91,15 +97,22 @@ minSdk 21 / NDK 26.3.11579264 / CMake 3.22.1 / 纯 Java（无 Kotlin）/ `abiFil
 cd /home/sld/offline-server
 git add -A && git commit -m '<scope>: <一句话>'      # 号要变, 不然手机上是旧码目录
 npm run typecheck && npm run selftest                # 老规矩: 改完先过 PC 侧
-npm run build:cjs && npm run selftest:cjs            # CJS 产物单独再验一遍(Node18 语义)
+npm run build:cjs && npm run selftest:cjs            # CJS 产物单独再验一遍(走的是 PC node)
+SLD_DIST=dist-cjs /home/tmp/node18/bin/node test/selftest.mjs   # 同一套用 APK 里的 node18 再跑一遍
 node tools/pack_nodejs.mjs --check                   # 只核产物树, 不重写
 node tools/pack_nodejs.mjs                           # -> assets/{code,seed}
 GRADLE_USER_HOME=/home/tmp/gradle-home /home/tmp/gradle/gradle-8.7/bin/gradle \
   --no-daemon -p android :app:assembleDebug
 cp android/app/build/outputs/apk/debug/app-debug.apk /home/sld/apkbuild/sld-offline-server-v2.apk
 md5sum /home/sld/apkbuild/*.apk                      # 装机时报哪个包, 靠这个对
+unzip -l /home/sld/apkbuild/sld-offline-server-v2.apk "assets/code/*" \
+  | grep -o "^assets/code/[^/]*" | sort -u           # 包里只该有 manifest.json + 当前 buildCode
 ```
 
+- **pack 会整目录换掉 `assets/code/`**（只留 manifest 认的那个 `buildCode`）。这条是 2026-11-01 补的：
+  原来只删同名的那一个，上一版铺的 `code/0.1.0-ge41e93f` 一直留在树里跟着进包 —— 用"塞一个 2.7 MB 的
+  canary 进假 buildCode 目录 → 重编 → `unzip -l` 看得见"证实残留**确实会进 APK**，不是只在盘上难看。
+  `--check` 现在也拦这条（自检 `pack+node18: 按手机布局起假服` 里同批断言，负控 + 重铺剪枝各一次）。
 - **只改了 hook 脚本**（`frida/hook_gadget_all.js`）不用重编 APK：`cd frida && ./make_variants.sh`，
   再把两份变体 `cp` 进 `apkbuild/gadget-{local,tunnel}/hook_redirect_trust.js`（文件名不许动）。
 - **升级不会动玩家的档**：`slddata/` 由 `seedOnce` 保证"缺了才铺"，新版 APK 里那份更新的 `save.json`
@@ -151,7 +164,7 @@ seed 不覆盖已有存档、管理面写档安全与 token，都在同一次自
 
 | 自检 | 判的是什么 |
 |---|---|
-| `pack+node18: 按手机布局起假服` | 用 `/home/tmp/node18` 按 §3 的目录布局真起一次：铺盘 7 留 0、管理面 `running:true`、`urlList` 下发 `https://127.0.0.1:443`、存档落在数据目录而不是代码目录 |
+| `pack+node18: 按手机布局起假服` | 用 `/home/tmp/node18` 按 §3 的目录布局真起一次：铺盘 7 留 0、管理面 `running:true`、`urlList` 下发 `https://127.0.0.1:443`、存档落在数据目录而不是代码目录。附带两条剪枝断言：`code/` 里多一个别的 `buildCode` 时 `--check` **必须不合格**（负控），重铺一次后 `code/` **只剩 manifest + 当前号** |
 | `probe: 探针脚本在 node18 上跑出预期读数` | 同一个 `android/probe.js` 在 linux-x64 的 node18 上跑，断 `CustomEvent=undefined`、`旧socket复用=ERR_SOCKET_…`、`新socket占回同端口=ok`、`modules=ok/8`、整表 25,193 行 —— 屏上那几行的**期望值**是先离线钉住的，上机只需要比对数值 |
 | `android: 壳的接线` | 从源码文本断 JNI 符号名 = `Java_com_sld_offline_server_NodeBridge_nativeRun`、`System.loadLibrary` 的名字 = CMake 的 target、argv 的每个标志都在 `FLAG_ENV` 里、manifest 的 abi/node 版本对得上 |
 | `gadget: sockaddr 端口改写` | 把 `SLD_SA_START/SLD_SA_END` 圈出的纯字节函数抽进 `vm` 空上下文：`127.0.0.1:443 → 24 E3`、四种"不该动"的 sockaddr 逐字节不变、再按改写出来的字节**真 connect** 一次临时端口。附带断言 `hook_gadget_all.js` 的共享块 == `hook_redirect_trust.js`、变体没和基线漂移 |

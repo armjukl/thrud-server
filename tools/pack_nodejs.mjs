@@ -84,7 +84,8 @@ function findJunk(dir, base = dir) {
 }
 
 const bc = buildCode();
-const codeDir = path.join(ASSETS, "code", bc);
+const codeRoot = path.join(ASSETS, "code");
+const codeDir = path.join(codeRoot, bc);
 const seedDir = path.join(ASSETS, "seed");
 const kb = (n) => `${Math.round(n / 1024)}KB`;
 
@@ -100,6 +101,11 @@ if (flag("check")) {
   const junk = findJunk(seedDir);
   if (junk.length) problems.push(`seed 里混进运行垃圾: ${junk.slice(0, 3).join(", ")}${junk.length > 3 ? `…共 ${junk.length} 个` : ""}`);
   if (!fs.existsSync(path.join(codeDir, "data", "tbl", "Items.js"))) problems.push("code 里没有整表(dist-cjs/data/tbl), 假服起来会缺数据面");
+  // code/ 下只许有当前 buildCode: 旧的一直留着 = 每重出一次包多塞 13 MB 死代码进 APK
+  const siblings = fs.existsSync(codeRoot)
+    ? fs.readdirSync(codeRoot, { withFileTypes: true }).filter((e) => e.isDirectory() && e.name !== bc).map((e) => e.name)
+    : [];
+  if (siblings.length) problems.push(`code/ 里有别的 buildCode 残留: ${siblings.join(", ")} —— manifest 只认 ${bc}, 余下全是不进手机的死重量`);
   if (problems.length) {
     console.error("产物树不合格:\n  " + problems.join("\n  "));
     process.exit(1);
@@ -111,7 +117,7 @@ if (flag("check")) {
     console.error(`没有 ${path.join(distCjs, "bootstrap.js")} —— 先跑 npm run build:cjs`);
     process.exit(1);
   }
-  fs.rmSync(codeDir, { recursive: true, force: true }); // 代码目录整目录换 = 手机上"APK 更新覆盖"的语义
+  fs.rmSync(codeRoot, { recursive: true, force: true }); // 整个 code/ 换掉: 只留当前 buildCode
   fs.rmSync(seedDir, { recursive: true, force: true });
   let codeN = copyTree(distCjs, codeDir);
   fs.copyFileSync(MAIN, path.join(codeDir, "main.js"));
