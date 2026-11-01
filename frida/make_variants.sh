@@ -5,21 +5,27 @@
 cd "$(dirname "$0")" || exit 1
 B=hook_gadget_all.js
 grep -q '^var WATCH = true;$' $B && grep -q '^var SKIP = false;$' $B &&
-  grep -q '^var POOL = false;$' $B && grep -q '^var ZAXIS = false;$' $B || {
+  grep -q '^var POOL = false;$' $B && grep -q '^var ZAXIS = false;$' $B &&
+  grep -q "^var MODE = 'tunnel';$" $B || {
   echo "$B 的旋钮行不是预期形状(改过初值?), 脚本要跟着改"; exit 1; }
 
-gen() { # 输出名 WATCH SKIP POOL ZAXIS 说明
+gen() { # 输出名 WATCH SKIP POOL ZAXIS MODE 说明
   sed -e "s/^var WATCH = true;/var WATCH = $2;/" -e "s/^var SKIP = false;/var SKIP = $3;/" \
-      -e "s/^var POOL = false;/var POOL = $4;/" -e "s/^var ZAXIS = false;/var ZAXIS = $5;/" $B > "$1" || exit 1
+      -e "s/^var POOL = false;/var POOL = $4;/" -e "s/^var ZAXIS = false;/var ZAXIS = $5;/" \
+      -e "s/^var MODE = 'tunnel';/var MODE = '$6';/" $B > "$1" || exit 1
   node --check "$1" >/dev/null 2>&1 || { echo "语法不过: $1"; exit 1; }
-  printf '%-32s %sB %s  %s\n' "$1" "$(wc -c <$1)" "$(md5sum <$1 | cut -c1-12)" "$6"
+  # MODE=local 时 REDIR/SA_RULE 是三元表达式算出来的, 这里核一眼确实落在了 127.0.0.1 那条上
+  [ "$6" = local ] && ! grep -q "var SA_RULE = MODE === 'local' ? { ip: LOCAL_IP, from: 443, to: 9443 } : null;" "$1" &&
+    { echo "$1 的 SA_RULE 行对不上(重定向块和 hook_redirect_trust.js 漂移了?)"; exit 1; }
+  printf '%-38s %sB %s  %s\n' "$1" "$(wc -c <$1)" "$(md5sum <$1 | cut -c1-12)" "$7"
 }
 
-echo "基线: $(wc -c <$B)B md5=$(md5sum <$B | cut -c1-12)  (WATCH 观测登录视频)"
-gen hook_gadget_all_skip.js false true false false 'SKIP: 跳过登录视频, 不改 Lua'
-gen hook_gadget_pool.js true false true false 'WATCH+POOL: 只改卡池时间'
-gen hook_gadget_pool_skip.js false true true false 'SKIP+POOL: 卡池(10-18 真机验证过的那份)'
-gen hook_gadget_zaxis.js true false false true 'WATCH+ZAXIS: 只解战斗高度轴'
-gen hook_gadget_zaxis_skip.js false true false true 'SKIP+ZAXIS: 只解高度(想单独验证用它)'
-gen hook_gadget_pool_zaxis.js true false true true 'WATCH+POOL+ZAXIS: 卡池+高度'
-gen hook_gadget_pool_zaxis_skip.js false true true true 'SKIP+POOL+ZAXIS: 推荐(两样都改 + 跳视频)'
+echo "基线: $(wc -c <$B)B md5=$(md5sum <$B | cut -c1-12)  (WATCH 观测登录视频 · MODE=tunnel)"
+gen hook_gadget_all_skip.js false true false false tunnel 'SKIP: 跳过登录视频, 不改 Lua'
+gen hook_gadget_pool.js true false true false tunnel 'WATCH+POOL: 只改卡池时间'
+gen hook_gadget_pool_skip.js false true true false tunnel 'SKIP+POOL: 卡池(10-18 真机验证过的那份)'
+gen hook_gadget_zaxis.js true false false true tunnel 'WATCH+ZAXIS: 只解战斗高度轴'
+gen hook_gadget_zaxis_skip.js false true false true tunnel 'SKIP+ZAXIS: 只解高度(想单独验证用它)'
+gen hook_gadget_pool_zaxis.js true false true true tunnel 'WATCH+POOL+ZAXIS: 卡池+高度'
+gen hook_gadget_pool_zaxis_skip.js false true true true tunnel 'SKIP+POOL+ZAXIS: 推荐(两样都改 + 跳视频)'
+gen hook_gadget_local_pool_zaxis_skip.js false true true true local 'LOCAL+SKIP+POOL+ZAXIS: 手机 APK 假服(443→9443), 见 README-安卓APK假服.md'
