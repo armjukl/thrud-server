@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 
 // import.meta.dirname 要 Node 20.11+; 自检也得能在 Node 18(与 nodejs-mobile 同版本)上跑, 故用 URL 解。
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// 被测产物目录: 默认 ESM 的 dist/, SLD_DIST=dist-cjs 时复跑 CommonJS 产物。
+const DIST = process.env.SLD_DIST || 'dist';
 const PY_CANDIDATES = [process.env.SLD_PY, '/home/tmp/venv/bin/python', 'python3'].filter(Boolean);
 const py = PY_CANDIDATES.find((p) => (p.includes('/') ? fs.existsSync(p) : true)) || 'python3';
 
@@ -35,11 +37,11 @@ process.env.SLD_HTTP_PORT = '19106';
 process.env.SLD_NET_MODE = 'kcp';
 process.env.SLD_NO_COLOR = '1';
 
-const { encodeSegment, decodePacket, CMD, KcpSession } = await import('../dist/kcp.js');
-const { Framer, encode, CANDIDATE_RULES } = await import('../dist/framing.js');
-const { createGateway, on } = await import('../dist/gateway.js');
-const { createHttpServer } = await import('../dist/http.js');
-const { config } = await import('../dist/config.js');
+const { encodeSegment, decodePacket, CMD, KcpSession } = await import(`../${DIST}/kcp.js`);
+const { Framer, encode, CANDIDATE_RULES } = await import(`../${DIST}/framing.js`);
+const { createGateway, on } = await import(`../${DIST}/gateway.js`);
+const { createHttpServer } = await import(`../${DIST}/http.js`);
+const { config } = await import(`../${DIST}/config.js`);
 
 const exec = promisify(execFile);
 const results = [];
@@ -196,8 +198,8 @@ await check('HTTP 桩: 服务器列表/版本/登录/公告/未实现端点', as
 
 // ---------------------------------------------------------------- 4b. 战斗 (11028 进战斗最小闭环)
 await check('GS 战斗: 11028 回 StartSoloBattle_S2C 含 battleEnterInfo', async () => {
-  const { handleAppInterface } = await import('../dist/gs.js');
-  const pb = await import('../dist/proto.js');
+  const { handleAppInterface } = await import(`../${DIST}/gs.js`);
+  const pb = await import(`../${DIST}/proto.js`);
   // handleAppInterface 会落盘 gs-req-11028.fields.json(真实抓包记录), 备份后还原.
   const fieldsFile = path.join(config.paths.logs, 'gs-req-11028.fields.json');
   const backup = fs.existsSync(fieldsFile) ? fs.readFileSync(fieldsFile) : null;
@@ -236,7 +238,7 @@ await check('GS 战斗: 11028 回 StartSoloBattle_S2C 含 battleEnterInfo', asyn
 
 // ---------------------------------------------------------------- 4c. 抽卡掉落链
 await check('抽卡: 池 3116 掉落链完整解析, 不因递归深度误判返回 null', async () => {
-  const { poolDraw } = await import('../dist/gacha.js');
+  const { poolDraw } = await import(`../${DIST}/gacha.js`);
   // 真实链 Drop->DropSet->DropGroup 多层嵌套最深约 11 层; 上限过小会让约 1.6% 的
   // 单抽静默失败 -> SwearHero_S2C.number 与 rewards 数量不一致 (客户端结果不弹).
   let nulls = 0;
@@ -253,8 +255,8 @@ await check('抽卡: 池 3116 掉落链完整解析, 不因递归深度误判返
 // ShowItem_Push 必须走 completedList: C# HandleResult 把 ReturnPackageInfo.bodyInfo 写进
 // replenishList, 而 Lua HttpClientForLua.Ignore_Replenish_MsgID 会把 ShowItem_Push 过滤掉.
 await check('抽卡: ShowItem_Push 走 completedList(PushMsg2Client), 主包在单包槽', async () => {
-  const gs = await import('../dist/gs.js');
-  const pb = await import('../dist/proto.js');
+  const gs = await import(`../${DIST}/gs.js`);
+  const pb = await import(`../${DIST}/proto.js`);
   const showItem = pb.concat(pb.vfield(1, 56), pb.bfield(2, pb.bfield(1, pb.concat(pb.vfield(1, 5033010), pb.vfield(2, 1)))));
   const p2c = gs.pushMsg2Client([[900009, showItem]]);
   const body = Buffer.from([0x08, 0x0a]);
@@ -280,10 +282,10 @@ await check('抽卡: ShowItem_Push 走 completedList(PushMsg2Client), 主包在�
 // 且 GachaResultItemCtrl 只对 Leader/Weapon 建卡 (其它类型 itemQuality=nil -> 崩). 所以 recordInfo.itemId
 // 只能是抽到的本体; 重复角色的意识碎片必须只出现在 Rewards 里(par 指回本体).
 await check('抽卡: recordInfo.itemId 恒为角色/律叶(碎片只进 Rewards.par)', async () => {
-  const { HANDLERS } = await import('../dist/payloads.js');
-  const pb = await import('../dist/proto.js');
-  const { LEADER } = await import('../dist/data/leader.js');
-  const { WEAPON } = await import('../dist/data/weapon.js');
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const pb = await import(`../${DIST}/proto.js`);
+  const { LEADER } = await import(`../${DIST}/data/leader.js`);
+  const { WEAPON } = await import(`../${DIST}/data/weapon.js`);
   const saveFile = config.paths.save;
   const backup = fs.existsSync(saveFile) ? fs.readFileSync(saveFile) : null;
   try {
@@ -304,10 +306,10 @@ await check('抽卡: recordInfo.itemId 恒为角色/律叶(碎片只进 Rewards.
 
 // SLD_GACHA_FORCE_QUALITY=5: 出货强制金色本体(调试用). 断言十连 10 条 recordInfo 品质都为 5.
 await check('抽卡: SLD_GACHA_FORCE_QUALITY=5 十连全金', async () => {
-  const { HANDLERS } = await import('../dist/payloads.js');
-  const pb = await import('../dist/proto.js');
-  const { config } = await import('../dist/config.js');
-  const { itemQuality } = await import('../dist/data/rarity.js');
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const pb = await import(`../${DIST}/proto.js`);
+  const { config } = await import(`../${DIST}/config.js`);
+  const { itemQuality } = await import(`../${DIST}/data/rarity.js`);
   const saveFile = config.paths.save;
   const backup = fs.existsSync(saveFile) ? fs.readFileSync(saveFile) : null;
   const prev = config.gacha.forceQuality;
@@ -323,7 +325,7 @@ await check('抽卡: SLD_GACHA_FORCE_QUALITY=5 十连全金', async () => {
         assert.equal(itemQuality(itemId), 5, `强制金: recordInfo.itemId=${itemId} 品质应为 5`);
       }
     }
-    const { LEADER } = await import('../dist/data/leader.js');
+    const { LEADER } = await import(`../${DIST}/data/leader.js`);
     config.gacha.forceType = 'leader';
     const req = { msgId: 2000, packetUUid: 99, proto: pb.concat(pb.vfield(1, 3116), pb.vfield(2, 10)) };
     const recs = pb.decodeFields(HANDLERS[2000](req).body).filter((f) => f.field === 5);
@@ -344,11 +346,11 @@ await check('抽卡: SLD_GACHA_FORCE_QUALITY=5 十连全金', async () => {
 // 抽到新角色时必须在 extra 里后置 Data_Push(900011){ leaderAttrChanged=5{ leaderInfo=1[...] } },
 // 否则大厅角色表只会走登录的 PlayerLoginGetInfo.leaderInfo —— 抽完不重登看不到新角色.
 await check('抽卡: 新角色后置 Data_Push(leaderAttrChanged)', async () => {
-  const { HANDLERS } = await import('../dist/payloads.js');
-  const pb = await import('../dist/proto.js');
-  const { config } = await import('../dist/config.js');
-  const { LEADER } = await import('../dist/data/leader.js');
-  const { DEFAULT_SAVE } = await import('../dist/save.js');
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const pb = await import(`../${DIST}/proto.js`);
+  const { config } = await import(`../${DIST}/config.js`);
+  const { LEADER } = await import(`../${DIST}/data/leader.js`);
+  const { DEFAULT_SAVE } = await import(`../${DIST}/save.js`);
   const saveFile = config.paths.save;
   const backup = fs.existsSync(saveFile) ? fs.readFileSync(saveFile) : null;
   const prevQ = config.gacha.forceQuality, prevT = config.gacha.forceType;
@@ -386,7 +388,7 @@ await check('抽卡: 新角色后置 Data_Push(leaderAttrChanged)', async () => 
 // 这一条钉的是"值从客户端真表来"这个口径本身, 不是某张表的内容: 换资源包后数字会变, 所以
 // 只断言三件事 —— 能取到值/式杖上限的坑不复发/生成器还能跑。
 await check('tbl: 整表取数面可用, 式杖上限只认 TalentSkill 不信 Skill.maxLevel', async () => {
-  const t = await import('../dist/tbl.js');
+  const t = await import(`../${DIST}/tbl.js`);
   assert.ok(t.has('TalentSkill') && t.has('SignActivity'), 'src/data/tbl 没生成? 跑 python3 tools/gen_tables.py --tier 1');
   assert.equal(t.num('PlayerGrow', 7, 'exp'), 20, 'PlayerGrow[7].exp 应是 20 (对过 Lua 明文)');
   assert.deepEqual(t.arr('LeaderWandSkill', '20010011', 'skillId'), [6311053, 6311050],
@@ -452,7 +454,7 @@ const saveFixture = () => ({
 });
 
 await check('save: normalizeSave 全字段往返不丢 (漏登记即红灯)', async () => {
-  const { normalizeSave } = await import('../dist/save.js');
+  const { normalizeSave } = await import(`../${DIST}/save.js`);
   const fx = saveFixture();
   const got = normalizeSave(fx);
   assert.deepEqual(Object.keys(got).sort(), Object.keys(fx).sort(), '顶层键集必须相等');
@@ -464,7 +466,7 @@ await check('save: normalizeSave 全字段往返不丢 (漏登记即红灯)', as
 // 老档(只有 A4 之前的那些键, trainLevels 还是 number[])必须被 loadSave 升上来, 且第二次读不再改.
 // 这条会写真档 data/save.json(+.bak), 已整体备份还原; 别和常驻假服同时跑.
 await check('save: 老档经 loadSave 升级 + 原子写留 .bak', async () => {
-  const { loadSave, BG_SCHEMA } = await import('../dist/save.js');
+  const { loadSave, BG_SCHEMA } = await import(`../${DIST}/save.js`);
   const files = [config.paths.save, config.paths.save + '.bak'];
   const backup = files.map((p) => (fs.existsSync(p) ? fs.readFileSync(p) : null));
   const oldShape = {
@@ -501,9 +503,9 @@ await check('save: 老档经 loadSave 升级 + 原子写留 .bak', async () => {
 // 全部喂内存档(normalizeSave 出来的), 不碰 data/save.json —— 原语的签名就是 (s, ...).
 // 断言里每个数都取自客户端表本身, 不是拍脑袋: 见行内注释的表/行.
 await check('econ: 扣费/发奖只认客户端表, 不足一分不扣', async () => {
-  const { normalizeSave } = await import('../dist/save.js');
-  const e = await import('../dist/econ.js');
-  const t = await import('../dist/tbl.js');
+  const { normalizeSave } = await import(`../${DIST}/save.js`);
+  const e = await import(`../${DIST}/econ.js`);
+  const t = await import(`../${DIST}/tbl.js`);
   const s = normalizeSave({
     player: { level: 10, exp: 0, strength: 50, maxStrength: 158, strengthRealTime: Math.floor(Date.now() / 1000) },
     items: { '1020004': 5 }, money: { '10': 5000 },
@@ -540,7 +542,7 @@ await check('econ: 扣费/发奖只认客户端表, 不足一分不扣', async (
   assert.equal(s.money['10'], 4000 + 2650, 'type=Money 的条目必须进 money');
   const r2 = e.rewardById(s, 501100, eff);
   assert.deepEqual(r2, [{ itemId: 10, count: 1000 }], 'Drop 单条必掉');
-  const { dropAll } = await import('../dist/gacha.js');
+  const { dropAll } = await import(`../${DIST}/gacha.js`);
   assert.equal(dropAll(100101).length, 2, '两条 probability=10000 的行要整批发');
   // 路由: 角色进 characters / 武装建实例并换 wSeq 号 / 皮肤进 cloths / 精神冗余加导师经验
   const before = s.characters.length;
@@ -568,9 +570,9 @@ await check('econ: 扣费/发奖只认客户端表, 不足一分不扣', async (
 });
 
 await check('skills: 式杖上限只读 TalentSkill, 满级/材料不足不推进', async () => {
-  const { normalizeSave, characterById } = await import('../dist/save.js');
-  const e = await import('../dist/econ.js');
-  const sk = await import('../dist/skills.js');
+  const { normalizeSave, characterById } = await import(`../${DIST}/save.js`);
+  const e = await import(`../${DIST}/econ.js`);
+  const sk = await import(`../${DIST}/skills.js`);
   const s = normalizeSave({ player: { level: 10, strength: 200, strengthRealTime: Math.floor(Date.now() / 1000) } });
   const c = characterById(s, 2001001);
   s.characters = [c];
@@ -637,9 +639,9 @@ function useSave(content) {
 //      required 断言、改跑 opt.after 去断言"什么都没变"(材料没扣、等级没动)。
 async function checkHandler(title, msgId, opt = {}) {
   await check(title, async () => {
-    const { HANDLERS } = await import('../dist/payloads.js');
-    const pb = await import('../dist/proto.js');
-    const { loadSave } = await import('../dist/save.js');
+    const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+    const pb = await import(`../${DIST}/proto.js`);
+    const { loadSave } = await import(`../${DIST}/save.js`);
     const h = HANDLERS[msgId];
     assert.ok(h, `HANDLERS[${msgId}] 未注册`);
     const cmd = opt.cmd ?? ps.cmdOf(msgId);
@@ -683,7 +685,7 @@ async function checkHandler(title, msgId, opt = {}) {
 }
 
 await check('proto: .proto 解析器读得出 required, 少发一个就红灯', async () => {
-  const pb = await import('../dist/proto.js');
+  const pb = await import(`../${DIST}/proto.js`);
   const st = ps.stats();
   // 数字是实测值(1305 消息 / 643 命令 / 2069 required), 留三成余量: 解析器退化或 proto 被动过会掉穿
   assert.ok(st.messages > 900 && st.cmds > 450 && st.requiredFields > 1400, `解析结果异常: ${JSON.stringify(st)}`);
@@ -715,8 +717,8 @@ await check('proto: .proto 解析器读得出 required, 少发一个就红灯', 
 
 // 已注册的全部 handler 过一遍 required: 空请求是最坏输入(走各 handler 的兜底分支), 兜底包也得合规.
 await check('proto: 已注册 handler 的回包 required 全覆盖 (空请求兜底)', async () => {
-  const { HANDLERS } = await import('../dist/payloads.js');
-  const pb = await import('../dist/proto.js');
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const pb = await import(`../${DIST}/proto.js`);
   const ACK_ONLY = {                       // proto 里本就没有回体消息, 只回通用 ack
     11018: 'BattleSettle 无消息体',
     11019: 'BattleLeave 无 _S2C(BattleLeave 是请求体)',
@@ -760,7 +762,7 @@ await check('proto: 已注册 handler 的回包 required 全覆盖 (空请求兜
 });
 
 await check('proto: 注册表完整 (基线 handler 不掉 / 第一档进度对得上)', async () => {
-  const { HANDLERS } = await import('../dist/payloads.js');
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
   const registered = new Set(Object.keys(HANDLERS).map(Number));
   // 主线独有(登录/创角/战斗握手) + 第一档要重构的两条: 任何时候掉出注册表都是事故.
   // (9999 心跳不在 HANDLERS 里, 由 gs.ts 直接回, 所以不进这张表)
@@ -794,7 +796,7 @@ await checkHandler('checkHandler: 现有 10002 PlayerLoginGetInfo 回体合规',
   after: (s) => assert.ok(s.characters.length > 0, '读档口径: handler 看到的存档非空'),
 });
 await checkHandler('checkHandler: 现有 10007 GetWeaponListPage 分页回包含 onlyId', 10007, {
-  req: (await import('../dist/proto.js')).vfield(1, 0),
+  req: (await import(`../${DIST}/proto.js`)).vfield(1, 0),
   fields: (dec, { has, pb }) => {
     assert.ok(has(1), 'weaponInfos=1 才是列表本体(2 是 page, 3 是 next)');
     for (const w of dec.filter((f) => f.field === 1)) {
@@ -810,7 +812,7 @@ await checkHandler('checkHandler: 现有 10051 GetSignReward 空请求不炸', 1
 // 这九条是全档里最容易"回得出去、客户端不动"的一类: required 只有 LeaderInfo 那一坨,
 // 而 leader 的**字段号每条都不一样**(ActiveSkill/Stick=1, Talent/Star/StarLevel=2),
 // optional 字段串号 required 自检抓不到 -> 每条手写 has(1)/has(2) 断言。
-const GProto = await import('../dist/proto.js');
+const GProto = await import(`../${DIST}/proto.js`);
 const DPUSH = 900011;                     // CMD.DataPush
 const LID = 2001001;                      // 底档里一定有的角色
 const ACT = 20010120;                     // LEADER[2001001].activeSkillId
@@ -1055,12 +1057,12 @@ await checkHandler('B1 1011 ResetStickSkill: 只清槽位关系, 技能等级是
 // 式杖技能集合的取数口径: 普攻/被动来自 Leader 表, 不是武器表 (武器的 weaponSkillId 在
 // Skill_Xls 里 maxLevel 恒为 1, 拿它当被动的结果就是"每个被动都满级、永远升不动").
 await check('B1 养成面板的被动集合取自 Leader 表而非武器表', async () => {
-  const t = await import('../dist/tbl.js');
+  const t = await import(`../${DIST}/tbl.js`);
   const common = t.arr('Leader', LID, 'commonSkillId').map(Number);
   const talent = t.arr('Leader', LID, 'talentSkill').map(Number);
   const restore = useSave(trainSave((s, c) => { c.breach = 4; }));
   try {
-    const { HANDLERS } = await import('../dist/payloads.js');
+    const { HANDLERS } = await import(`../${DIST}/payloads.js`);
     const res = HANDLERS[10002]({ msgId: 10002, packetUUid: 1, proto: Buffer.alloc(0), headerHex: '' });
     const body = Buffer.isBuffer(res) ? res : res.body;
     const li = GProto.decodeFields(body).filter((f) => f.field === 4)
@@ -1079,13 +1081,13 @@ await check('B1 养成面板的被动集合取自 Leader 表而非武器表', as
 // 1 级且 consumeId=0 -> 下一级配置取不到, 潜能觉醒按钮永不出现(1008 也就发不出来); 红点判据又拿
 // consumeId=0 去 index Consume 表 -> Lua 报错, 面板整个卡死. 真机上就是"满级点具相卡住".
 await check('B1 具相面板 activeSkills 只有 主动(type=1)/极奏(type=2) 两条', async () => {
-  const { LEADER } = await import('../dist/data/leader.js');
-  const { WEAPON } = await import('../dist/data/weapon.js');
+  const { LEADER } = await import(`../${DIST}/data/leader.js`);
+  const { WEAPON } = await import(`../${DIST}/data/weapon.js`);
   const act = LEADER[LID][1], jizou = LEADER[LID][2];
   const shooting = WEAPON[LEADER[LID][0]][0];
   const restore = useSave(trainSave((s, c) => { c.breach = 4; }));
   try {
-    const { HANDLERS } = await import('../dist/payloads.js');
+    const { HANDLERS } = await import(`../${DIST}/payloads.js`);
     const res = HANDLERS[10002]({ msgId: 10002, packetUUid: 1, proto: Buffer.alloc(0), headerHex: '' });
     const body = Buffer.isBuffer(res) ? res : res.body;
     const li = GProto.decodeFields(body).filter((f) => f.field === 4)
@@ -1109,7 +1111,7 @@ await check('B1 具相面板 activeSkills 只有 主动(type=1)/极奏(type=2) �
 // 百分比属性在 Attribute 表里存的是**小数**(0.02 = 暴击率 2%, 0.4 = 暴击伤害 40%), 跟着 hp/atk 一起
 // 取整会全归 0 —— 真机上表现为"式仗的暴击伤害/暴击率永远是 0". 全表 542 行里这两列的非零值没有一行是整数.
 await check('attrs: 暴击率(201)/暴击伤害(200) 保持小数, 其余属性仍取整', async () => {
-  const A = await import('../dist/attrs.js');
+  const A = await import(`../${DIST}/attrs.js`);
   const w = A.weaponAttr(5051030, 1, 0);
   assert.equal(w.get(201), 0.02, '武装暴击率 0.02 被取整成 0');
   assert.equal(w.get(200), 0.4, '武装暴击伤害 0.4 被取整成 0');
@@ -1121,7 +1123,7 @@ await check('attrs: 暴击率(201)/暴击伤害(200) 保持小数, 其余属性�
   // 端到端: 值经 dblfield 上线后仍是小数(客户端按 attributeMap 画面板与战斗数值).
   const restore = useSave(trainSave((s, c) => { c.breach = 4; }));
   try {
-    const { HANDLERS } = await import('../dist/payloads.js');
+    const { HANDLERS } = await import(`../${DIST}/payloads.js`);
     const res = HANDLERS[10002]({ msgId: 10002, packetUUid: 1, proto: Buffer.alloc(0), headerHex: '' });
     const body = Buffer.isBuffer(res) ? res : res.body;
     const li = GProto.decodeFields(body).filter((f) => f.field === 4)
@@ -1140,7 +1142,7 @@ await check('attrs: 暴击率(201)/暴击伤害(200) 保持小数, 其余属性�
 // 早先 weaponAttr 只有"当前突的成长行 ×(等级-1)", 且**完全没读 growAddAttributeID** -> 突破白送的那一坨
 // (5★ 突1 = +114 攻/+2%暴击率/+2.5%暴伤)凭空消失, 真机上就是"升级突破属性不动".
 await check('attrs: 武装等级成长分段累计 + 突破附加属性都算进终值', async () => {
-  const A = await import('../dist/attrs.js');
+  const A = await import(`../${DIST}/attrs.js`);
   const atk = (lv, br) => A.weaponAttr(5151010, lv, br).get(101);
   assert.equal(atk(1, 0), 120, '1 级 0 突 = 基础行');
   assert.equal(atk(20, 0), 296, '本突 20 级: 120 + 9.26316*19');
@@ -1163,7 +1165,7 @@ await check('attrs: 武装等级成长分段累计 + 突破附加属性都算进
 // checkHandler 直调 HANDLERS, 而"拒单"是 gs.ts 装配回包时的一个分支 —— 不端到端过一遍
 // handleAppInterface, 自检对"header=0 空包到底成不成帧、有没有误伤正常包"是盲的。
 await check('GS 帧: 养成 deny 回全零合法帧, 与"未注册兜底""成功回包"三种形状互不混淆', async () => {
-  const gs = await import('../dist/gs.js');
+  const gs = await import(`../${DIST}/gs.js`);
   const u32 = (v) => { const b = Buffer.alloc(4); b.writeUInt32BE(v >>> 0); return b; };
   const reqOf = (msgId, data) => Buffer.concat([
     u32(0), u32(0), u32(0), u32(msgId),
@@ -1227,9 +1229,9 @@ await check('GS 帧: 养成 deny 回全零合法帧, 与"未注册兜底""成功
 // 的 17(生效) 与 18(待确认) 的四列数组, 短一格就 index 到 nil; 而 18 的"形状"本身又是客户端
 // IsRecastingOver 的判据(洗属性不许带技能、洗技能必须照抄 17 的属性列且 scope 发 0).
 // 所以每条既断言 required/字段号, 也断言 17/18 的条数与取值合法性.
-const WEAP = await import('../dist/weapons.js');
-const SAVEM = await import('../dist/save.js');
-const TBL = await import('../dist/tbl.js');
+const WEAP = await import(`../${DIST}/weapons.js`);
+const SAVEM = await import(`../${DIST}/save.js`);
+const TBL = await import(`../${DIST}/tbl.js`);
 const WCFG = 5041010;                 // 4★: 1 技能位 + 2 属性位, 精炼上限 4, 有突破行
 const WLOW = 5021010;                 // 2★: 0 技能位 -> 洗练必须被拒(且精炼上限 0)
 const WID = '7TEST0001';              // 穿在 LID 身上的测试武装
@@ -1602,7 +1604,7 @@ await checkHandler('B2 1209 SelectWeaponRandomInfo: 没有待确认 / 类型不�
 await check('B2 登录/仓库列表: 17 齐、19/20 不是时间戳、默认式仗 defleaderId=穿戴者', async () => {
   const restore = useSave(armSave());
   try {
-    const { HANDLERS } = await import('../dist/payloads.js');
+    const { HANDLERS } = await import(`../${DIST}/payloads.js`);
     const res = HANDLERS[10007]({ msgId: 10007, packetUUid: 1, proto: GProto.vfield(1, 0), headerHex: '' });
     const body = Buffer.isBuffer(res) ? res : res.body;
     const list = GProto.decodeFields(body).filter((f) => f.field === 1);
@@ -1645,7 +1647,7 @@ await check('B2 物化: 空/撞号 onlyId 走 wSeq 发号, 落盘后重启不跳
   base.weapons.push(wInst('', WCFG), wInst(WMAT1, WCFG)); // 空号 + 撞号
   const restore = useSave(base);
   try {
-    const { HANDLERS } = await import('../dist/payloads.js');
+    const { HANDLERS } = await import(`../${DIST}/payloads.js`);
     const run = () => {
       const r = HANDLERS[10007]({ msgId: 10007, packetUUid: 1, proto: GProto.vfield(1, 0), headerHex: '' });
       return Buffer.isBuffer(r) ? r : r.body;
@@ -1706,5 +1708,5 @@ await check('tools/extract_res.py 可 dry-run', async () => {
 const fail = results.filter((r) => r[0] === 'FAIL');
 process.stdout.write('\n');
 for (const [st, name, err] of results) process.stdout.write(`${st === 'PASS' ? '✓' : st === 'SKIP' ? '-' : '✗'} ${name}${err ? `  <- ${err}` : ''}\n`);
-process.stdout.write(`\n${results.length - fail.length}/${results.length} 通过\n`);
+process.stdout.write(`\n${results.length - fail.length}/${results.length} 通过 (被测产物 ${DIST}, node ${process.version})\n`);
 process.exit(fail.length ? 1 : 0);

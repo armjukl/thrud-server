@@ -15,6 +15,7 @@
     "start:kcp": "SLD_NET_MODE=kcp node dist/index.js",
     "start:raw": "SLD_NET_MODE=raw node dist/index.js",
     "selftest": "node test/selftest.mjs",
+    "selftest:cjs": "SLD_DIST=dist-cjs node test/selftest.mjs",
     "extract": "${PY:-/home/tmp/venv/bin/python} tools/extract_res.py",
     "lua:groups": "/home/tmp/venv/bin/python tools/lua_probe.py groups --manifest ../manifests/toluaLoader --basedir toLua/Data",
     "meta:check": "/home/tmp/venv/bin/python tools/meta_decrypt.py data/logs/global-metadata.dat --check"
