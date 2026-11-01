@@ -10,7 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { ROOT } from "./config.js";
+import { config } from "./config.js";
 import { log } from "./logger.js";
 
 /** 单个武将 (对应 msg.proto 的 LeaderInfo). */
@@ -220,7 +220,7 @@ export interface SaveData {
   regTime: number;
 }
 
-const SAVE_FILE = path.join(ROOT, "data", "save.json");
+const SAVE_FILE = config.paths.save;
 const SAVE_TMP = SAVE_FILE + ".tmp";
 const SAVE_BAK = SAVE_FILE + ".bak";
 

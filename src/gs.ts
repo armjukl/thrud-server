@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { ROOT } from "./config.js";
+import { config } from "./config.js";
 import { log, record, hex } from "./logger.js";
 import * as pb from "./proto.js";
 import { CMD_NAME, HANDLERS, type GsRequest, type GsResponse } from "./payloads.js";
@@ -19,7 +19,7 @@ import { CMD_NAME, HANDLERS, type GsRequest, type GsResponse } from "./payloads.
 // push 段的前导"分派/类型"字节, 便于迭代: 读 data/frame_prefix.txt(hex)
 function readPrefix(): number {
   try {
-    const s = fs.readFileSync(path.join(ROOT, "data", "frame_prefix.txt"), "utf8").trim();
+    const s = fs.readFileSync(config.paths.framePrefix, "utf8").trim();
     const v = parseInt(s, 16);
     return Number.isFinite(v) ? (v & 0xff) : 0;
   } catch {

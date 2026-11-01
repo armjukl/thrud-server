@@ -5,11 +5,37 @@
 // 已经是环境变量的键优先, .env 不覆盖。
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-/** 项目根: src/ 与 dist/ 都在根下一层, 两种运行方式解析结果一致。 */
-export const HERE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-export const ROOT = HERE;
+// 项目根不能用 import.meta.url —— 那行在 CommonJS 产物里是语法错误(TS1343), 而 APK 里
+// nodejs-mobile 只吃 CJS. 改成"从入口往上找带我们 package.json 名字的目录", 两种模块格式
+// 结果一致: node dist/index.js -> dist -> 仓库根; node test/selftest.mjs -> test -> 仓库根.
+function findRoot(): string {
+  let dir = path.resolve(process.argv[1] ? path.dirname(path.resolve(process.argv[1])) : process.cwd());
+  for (let i = 0; i < 8; i++) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+      if (pkg && pkg.name === "sld-offline-server") return dir;
+    } catch {
+      /* 这层没有 package.json, 继续往上 */
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return process.cwd();
+}
+
+/** 项目根: 代码所在(仓库根 / APK 里的 code 目录). 只用来找 .env 与工具链资源. */
+export const ROOT = path.resolve(process.env.SLD_ROOT || findRoot());
+export const HERE = ROOT;
+
+/**
+ * 可写数据根: save.json / logs / capture / 几个 seed 配置文件都从这里派生.
+ * PC 上不设 = ROOT(行为与从前逐字节一致); 手机上指向 app 的外部文件目录, 这样
+ * "APK 更新覆盖代码目录"永远碰不到玩家存档.
+ */
+export const DATA = path.resolve(process.env.SLD_DATA_DIR || ROOT);
+
 
 /** 读 <项目根>/.env; 已存在的环境变量不覆盖。可用 SLD_ENV_FILE 指定别的文件。 */
 function loadDotEnv(): void {
@@ -59,10 +85,12 @@ export const config = {
     maxSegmentsPerPacket: num(process.env.SLD_MAX_SEGMENTS, 64),
   },
   paths: {
-    logs: path.join(ROOT, "data", "logs"),
-    capture: path.join(ROOT, "data", "capture"),
-    headerRule: path.join(ROOT, "data", "header-rule.json"),
-    certs: path.join(ROOT, "certs"),
+    logs: path.join(DATA, "data", "logs"),
+    capture: path.join(DATA, "data", "capture"),
+    headerRule: path.join(DATA, "data", "header-rule.json"),
+    save: path.join(DATA, "data", "save.json"),
+    framePrefix: path.join(DATA, "data", "frame_prefix.txt"),
+    certs: path.join(DATA, "certs"),
     // 客户端 APK(工具链/selftest 取 metadata 用, 假服运行不需要)
     apk: str(process.env.SLD_APK, path.join(RES, "apk", "sld_1.0.7.1426_bilibili.apk")),
   },

@@ -13,7 +13,7 @@ const py = PY_CANDIDATES.find((p) => (p.includes('/') ? fs.existsSync(p) : true)
 
 // global-metadata.dat 从 APK 里现取, 不依赖 /home/tmp 的工作目录
 async function ensureMetadata() {
-  const dst = path.join(ROOT, 'data', 'logs', 'global-metadata.dat');
+  const dst = path.join(config.paths.logs, 'global-metadata.dat');
   if (fs.existsSync(dst) && fs.statSync(dst).size > 1_000_000) return dst;
   const apk = process.env.SLD_APK || config.paths.apk;
   if (!fs.existsSync(apk)) return null;
@@ -277,7 +277,7 @@ await check('抽卡: recordInfo.itemId 恒为角色/律叶(碎片只进 Rewards.
   const pb = await import('../dist/proto.js');
   const { LEADER } = await import('../dist/data/leader.js');
   const { WEAPON } = await import('../dist/data/weapon.js');
-  const saveFile = path.join(ROOT, 'data', 'save.json');
+  const saveFile = config.paths.save;
   const backup = fs.existsSync(saveFile) ? fs.readFileSync(saveFile) : null;
   try {
     for (let t = 0; t < 40; t++) {
@@ -301,7 +301,7 @@ await check('抽卡: SLD_GACHA_FORCE_QUALITY=5 十连全金', async () => {
   const pb = await import('../dist/proto.js');
   const { config } = await import('../dist/config.js');
   const { itemQuality } = await import('../dist/data/rarity.js');
-  const saveFile = path.join(ROOT, 'data', 'save.json');
+  const saveFile = config.paths.save;
   const backup = fs.existsSync(saveFile) ? fs.readFileSync(saveFile) : null;
   const prev = config.gacha.forceQuality;
   const prevType = config.gacha.forceType;
@@ -342,7 +342,7 @@ await check('抽卡: 新角色后置 Data_Push(leaderAttrChanged)', async () => 
   const { config } = await import('../dist/config.js');
   const { LEADER } = await import('../dist/data/leader.js');
   const { DEFAULT_SAVE } = await import('../dist/save.js');
-  const saveFile = path.join(ROOT, 'data', 'save.json');
+  const saveFile = config.paths.save;
   const backup = fs.existsSync(saveFile) ? fs.readFileSync(saveFile) : null;
   const prevQ = config.gacha.forceQuality, prevT = config.gacha.forceType;
   try {
@@ -458,8 +458,7 @@ await check('save: normalizeSave 全字段往返不丢 (漏登记即红灯)', as
 // 这条会写真档 data/save.json(+.bak), 已整体备份还原; 别和常驻假服同时跑.
 await check('save: 老档经 loadSave 升级 + 原子写留 .bak', async () => {
   const { loadSave, BG_SCHEMA } = await import('../dist/save.js');
-  const dir = path.join(ROOT, 'data');
-  const files = ['save.json', 'save.json.bak'].map((n) => path.join(dir, n));
+  const files = [config.paths.save, config.paths.save + '.bak'];
   const backup = files.map((p) => (fs.existsSync(p) ? fs.readFileSync(p) : null));
   const oldShape = {
     prologue: { done: true, id: 'pro1' },
@@ -609,7 +608,7 @@ await check('skills: 式杖上限只读 TalentSkill, 满级/材料不足不推�
 // 才崩或面板空白。proto_schema.mjs 把 proto/*.proto 的 required 集读出来当断言输入;
 // checkHandler() 是 B1~B6 每条新 handler 的公共外壳(查回体 required + 手写串号断言 + 落盘回读)。
 const ps = await import('./proto_schema.mjs');
-const SAVE_FILE = path.join(ROOT, 'data', 'save.json');
+const SAVE_FILE = config.paths.save;
 
 // handler 会真写档 -> 每条用例自己备份/还原, 跑完 data/save.json 必须回到原样。
 function useSave(content) {
