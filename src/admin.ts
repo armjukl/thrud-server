@@ -16,6 +16,7 @@ import { DEFAULT_SAVE, loadSave, normalizeSave, saveSave, type SaveData } from "
 import { ITEM_VALID, MONEY_IDS } from "./data/items.js";
 import { itemType, countItem } from "./econ.js";
 import { missReport, row } from "./tbl.js";
+import { ADMIN_PAGE } from "./admin-page.js";
 
 /** 顶层键的**唯一真源**是 DEFAULT_SAVE: 加了新块忘了登记, 这里自动就变了。 */
 const SAVE_KEYS = Object.keys(DEFAULT_SAVE);
@@ -95,6 +96,57 @@ function writeSave(next: SaveData): string {
   return backup;
 }
 
+/** 日志尾读: 给 offset 就从那里读到文件尾(上限 256KB), 否则给最后 tail 行. */
+function readLogs(q: URLSearchParams): { text: string; nextOffset: number; size: number } {
+  const file = path.join(config.paths.logs, "server.log");
+  if (!fs.existsSync(file)) return { text: "", nextOffset: 0, size: 0 };
+  const size = fs.statSync(file).size;
+  const offset = Math.max(0, Math.min(Number(q.get("offset") ?? NaN) || 0, size));
+  if (q.get("offset") !== null) {
+    const len = Math.min(size - offset, 256 * 1024);
+    const buf = Buffer.alloc(len);
+    const fd = fs.openSync(file, "r");
+    try {
+      fs.readSync(fd, buf, 0, len, offset);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return { text: buf.toString("utf8"), nextOffset: offset + len, size };
+  }
+  const tail = Math.max(1, Math.min(Number(q.get("tail") || 200), 5000));
+  const len = Math.min(size, tail * 512);
+  const buf = Buffer.alloc(len);
+  const fd = fs.openSync(file, "r");
+  try {
+    fs.readSync(fd, buf, 0, len, size - len);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return { text: buf.toString("utf8").split("\n").slice(-tail).join("\n"), nextOffset: size, size };
+}
+
+function itemCatalog(q: URLSearchParams): unknown {
+  const kind = q.get("kind"); // money | item | 其它=只给道具
+  const s = loadSave();
+  const needle = (q.get("q") || "").trim().toLowerCase();
+  const ids = kind === "money" ? MONEY_IDS : [...ITEM_VALID].filter((i) => !MONEY_IDS.includes(i));
+  const out: { id: number; name: string; type: string; label: string; quality: number; owned: number }[] = [];
+  for (const id of ids) {
+    const r = row("Items", id);
+    const name = String(r?.name ?? "");
+    if (needle && !String(id).includes(needle) && !name.toLowerCase().includes(needle)) continue;
+    out.push({
+      id,
+      name,
+      type: itemType(id).type === 1 ? "money" : "item",
+      label: String(row("ItemTypes", Number(r?.typeId) || 0)?.remarks ?? ""),
+      quality: Number(r?.quality ?? 0),
+      owned: countItem(s, id),
+    });
+  }
+  return out;
+}
+
 export interface AdminHandle {
   server: http.Server;
   /** listen 成功才算就绪; 端口被占时这条 promise 会 reject(调用方必须 await 它)。 */
@@ -131,6 +183,7 @@ export function createAdminServer(offline: OfflineServer, overrides: { host?: st
 
     (async () => {
       const p = url.pathname;
+      if (req.method === "GET" && (p === "/" || p === "/index.html")) return send(res, 200, ADMIN_PAGE);
       if (p === "/api/status" && req.method === "GET") {
         const saveFile = config.paths.save;
         const st = fs.existsSync(saveFile) ? fs.statSync(saveFile) : null;
@@ -161,6 +214,16 @@ export function createAdminServer(offline: OfflineServer, overrides: { host?: st
         const backup = writeSave(next);
         log("info", "admin", `写档(${mode}) 已落盘, 改前副本 ${path.basename(backup)}`);
         return json_(200, { ok: true, backup, save: next });
+      }
+      if (p === "/api/items" && req.method === "GET") return json_(200, itemCatalog(url.searchParams));
+      if (p === "/api/logs" && req.method === "GET") return json_(200, readLogs(url.searchParams));
+      if (p === "/api/loglevel" && req.method === "POST") {
+        const body = JSON.parse((await readBody(req)).toString("utf8")) as { level?: string };
+        const level = String(body.level || "");
+        if (!["debug", "info", "warn", "error"].includes(level)) throw new BadRequest(`level 只能是 debug/info/warn/error, 收到 ${level}`);
+        setLevel(level);
+        log("info", "admin", `日志级别 -> ${level}`);
+        return json_(200, { level, ...summary() });
       }
       return json_(404, { error: `管理面没有 ${req.method} ${p}` });
     })().catch((e: unknown) => {
