@@ -186,10 +186,10 @@ apksigner verify --print-certs sky-sldgadget_v1.apk         # 5) 验
 | 脚本自己的日志 | 同目录 `gadget.log` |
 | 客户端日志 | 同目录 `clientLog/Thrud<年_月_日_时_分_秒>.log` |
 
-设备侧就绪副本（直接覆盖上面那个 `.js` 即可，注意**文件名保持 `hook_redirect_trust.js`**，因为配置里写死了这个名字）：
-
-- `/home/tmp/sldcarrier/device-phase1/hook_redirect_trust.js` = WATCH（只观察）
-- `/home/tmp/sldcarrier/device-phase2/hook_redirect_trust.js` = SKIP（跳过登录视频预载）
+设备侧就绪副本就是仓库里的变体文件 `frida/hook_gadget_*.js`（由 [`../frida/make_variants.sh`](../frida/make_variants.sh)
+从 `frida/hook_gadget_all.js` 生成，**变体一律不许手改**），直接覆盖上面那个 `.js` 即可，
+注意**文件名保持 `hook_redirect_trust.js`**，因为配置里写死了这个名字。
+（2026-10 那几轮的快照还在 `/home/tmp/sldcarrier/device-phase1..6/`：phase1=WATCH、phase2=SKIP。）
 
 ### 4.2 载体的提示，以及它对 gadget 的"假阴性"
 
@@ -216,7 +216,7 @@ apksigner verify --print-certs sky-sldgadget_v1.apk         # 5) 验
 
 所以判断注入是否成功**别看状态卡**，看这两样：
 
-1. `/storage/emulated/0/Android/data/com.wth.thrud.bilibili/files/gadget.log` 里有没有 `==== 脚本装载 mode=WATCH/SKIP ====`；
+1. `/storage/emulated/0/Android/data/com.wth.thrud.bilibili/files/gadget.log` 里有没有 `==== 脚本装载 mode=WATCH/SKIP net=tunnel/local ====`；
 2. 假服 `data/logs/server.out` 有没有该轮次的 `skipAPI` / `getClientUpdateData`（时钟差 8 小时，§7）。
 
 想让状态卡变准的做法已经在脚本里实现了（见下），但它本质上只是"脚本自己报个平安"，
@@ -324,11 +324,13 @@ apksigner verify 成品.apk
 
 ## 5. 在 gadget 里写脚本的硬规则
 
-主文件 [`frida/hook_gadget_all.js`](../frida/hook_gadget_all.js)（523 行 / 26,610 B）：
-前 80 行是从 `hook_redirect_trust.js` **原样复制**的重定向 + trust-all（`cmp` 校验过），
+主文件 [`frida/hook_gadget_all.js`](../frida/hook_gadget_all.js)（598 行 / 30,282 B）：
+前 144 行是从 `hook_redirect_trust.js` **逐字节复制**的重定向 + trust-all（不再是"人去 cmp"——
+`npm run selftest` 里那条 gadget 断言直接把两段的公共部分比死，漂了就红），
 后面追加 il2cpp 观察/替换块 + 落盘日志 + 载体广播（§4.2）+ 运行期改 Lua（§5.5 卡池、§5.6 战斗高度轴）。开关在文件里：
 
 ```js
+var MODE  = 'tunnel';              // 共享块里: 'local' = 重定向到 127.0.0.1 并把 sockaddr 的 443 改 9443(手机 APK 假服)
 var WATCH = true;                  // 只读 PreLoadVideo 入参并落盘, 不碰代码页
 var SKIP  = false;                 // true = Interceptor.replace + 手动 Invoke CSPrepareCallback
 var POOL  = false;                 // true = 劫 Lua 加载, 只把卡池时间窗改宽(§5.5)
@@ -343,23 +345,24 @@ var EXPECT_RVA = 0xf6fb54;         // 1.0.7 / appVersion 1426: THD.VideoManager.
 cd /home/sld/offline-server/frida && ./make_variants.sh
 ```
 
-它逐行 `sed` 四枚旋钮生成 7 个变体，每个跑 `node --check`，然后打印大小 / md5 / 用途。当前（10-18 加完 `ZAXIS`，
-基线 26,610 B / `1424dbb5b799`）：
+它逐行 `sed` 五枚旋钮（四枚 Lua + `MODE`）生成 8 个变体，每个跑 `node --check`，然后打印大小 / md5 / 用途。
+当前（11-01 同步共享块 + 加 `MODE` 之后，基线 30,282 B / `eb25037ef732`）：
 
 | 变体 | 大小 | md5 前 12 | 用途 |
 |---|---|---|---|
-| `hook_gadget_all.js` | 26,610 B | `1424dbb5b799` | 基线：只观测登录视频 |
-| `hook_gadget_all_skip.js` | 26,610 B | `402af3112863` | 跳视频，不改 Lua |
-| `hook_gadget_pool.js` | 26,609 B | `4d73a06167e8` | 卡池（WATCH） |
-| `hook_gadget_pool_skip.js` | 26,609 B | `54d7e6f7e9b7` | 卡池 + 跳视频 |
-| `hook_gadget_zaxis.js` | 26,609 B | `3798f6e6c75c` | 高度轴（WATCH） |
-| `hook_gadget_zaxis_skip.js` | 26,609 B | `bd9dc21da604` | 高度轴 + 跳视频（单独验证高度用它） |
-| `hook_gadget_pool_zaxis_skip.js` | 26,608 B | `ac38fa9d8a21` | **推荐**：卡池 + 高度 + 跳视频 |
+| `hook_gadget_all.js` | 30,282 B | `eb25037ef732` | 基线：只观测登录视频 |
+| `hook_gadget_all_skip.js` | 30,282 B | `839b801a423c` | 跳视频，不改 Lua |
+| `hook_gadget_pool.js` | 30,281 B | `29eec9759a8c` | 卡池（WATCH） |
+| `hook_gadget_pool_skip.js` | 30,281 B | `761191fbcb96` | 卡池 + 跳视频 |
+| `hook_gadget_zaxis.js` | 30,281 B | `0a0231e0cb58` | 高度轴（WATCH） |
+| `hook_gadget_zaxis_skip.js` | 30,281 B | `145eeeb6f74d` | 高度轴 + 跳视频（单独验证高度用它） |
+| `hook_gadget_pool_zaxis.js` | 30,280 B | `3c48dd6ed079` | 卡池 + 高度（WATCH） |
+| `hook_gadget_pool_zaxis_skip.js` | 30,280 B | `eef48793f17b` | **推荐**：卡池 + 高度 + 跳视频 |
+| `hook_gadget_local_pool_zaxis_skip.js` | 30,279 B | `14901874a19e` | 上面那份但 `MODE=local`：手机自服 APK 用（[安卓 APK 假服](README-安卓APK假服.md)） |
 
-> 10-18 真机验证卡池那两轮用的是 `03887295af5b`（WATCH+POOL）与 `4c1f1259626b`（SKIP+POOL，23,116 B），
-> 那是**加 `ZAXIS` 之前**的基线产物；副本留在 `device-phase3-pool/`、`device-phase4-pool-skip/` 当记录，
-> 别拿现在的大小去比它们。新副本：`device-phase5-pool-zaxis-skip/`（`ac38fa9d8a21`）、
-> `device-phase6-zaxis-skip/`（`bd9dc21da604`）。
+> 10-18 真机验证用的是加 `ZAXIS` 之后的 `ac38fa9d8a21`（26,608 B，`SKIP+POOL+ZAXIS`），以及更早的
+> `03887295af5b`（WATCH+POOL）与 `4c1f1259626b`（SKIP+POOL，23,116 B）—— 那些是**旧基线**的产物；
+> 副本留在 `device-phase3-pool/`…`device-phase6-zaxis-skip/` 当记录，别拿现在的大小去比它们。
 
 改完跑 `/home/tmp/sldcarrier/smoke_pool2.cjs` 两遍（默认 + `quiet`），
 **十五条全 `true`** 才算数（1–9 卡池、10–15 高度轴，见 [改Lua脚本](README-改Lua脚本.md) §5）。
@@ -399,7 +402,7 @@ fWrite(fd, Memory.allocUtf8String(s), u8len(s));    // 长度必须是 UTF-8 字
 - **`write` 的第三个参数是字节数**，中文在 UTF-8 里 3 字节；用 `s.length`（UTF-16 code unit）
   会把含中文的行尾截掉。所以配了个 `u8len()`。
 - 每行都 `open/write/close`：客户端遇到 Criware 错误可能直接退进程，任何缓冲都会跟着丢。
-- 每轮装载先写一行 `==== 脚本装载 mode=WATCH/SKIP ====`，因为日志现在会跨轮次累积，不然分不出是谁写的。
+- 每轮装载先写一行 `==== 脚本装载 mode=WATCH/SKIP net=tunnel/local ====`，因为日志现在会跨轮次累积，不然分不出是谁写的。
 
 ### 5.3 线程
 
@@ -640,12 +643,17 @@ skipAPI → getClientUpdateData → UIHotUpdate.SendResVersionUpdateRequest → 
   ⑦ §5.6 的 `ZAXIS`（战斗高度轴全关卡）**真机已生效**（10-18 用 `device-phase5-pool-zaxis-skip/`，游戏内可升降）。
   设备上如果还留着 route A 那份手改的 `75320b33…` 外部文件，日志会是 `命中 202 / 本来就是 1 的 1402`
   而不是 `命中 210`；想看清钩子本身就把那个文件删掉让表回到原版（见 [改Lua脚本](README-改Lua脚本.md) §7 第 7 条）。
-  设备副本（文件名必须仍叫 `hook_redirect_trust.js`，`libTool.config.so` 写死了这个路径）：
-  `device-phase5-pool-zaxis-skip/`（`SKIP+POOL+ZAXIS`，推荐，`ac38fa9d8a21`）、
-  `device-phase6-zaxis-skip/`（`SKIP+ZAXIS`，只想验高度时用，`bd9dc21da604`）、
-  `device-phase4-pool-skip/`（`SKIP+POOL`，卡池那轮真机用过的）、`device-phase3-pool/`（`WATCH+POOL`）、
-  `device-phase1/2`（13,664 B，无 Lua 改写）。全量 md5 见 `./frida/make_variants.sh` 的输出，
-  **手机上现在是 `device-phase5-pool-zaxis-skip/` = `ac38fa9d8a21`（26,608 B，卡池 + 高度 + 跳视频，quiet）** ——
-  10-18 两轮真机确认的就是它（卡池全开、战斗可升降）。
+  `libTool.config.so` 写死了这个路径，所以推上去时文件名必须仍叫 `hook_redirect_trust.js`；变体在仓库里
+  （`frida/hook_gadget_*.js`，`make_variants.sh` 生成，不许手改）：
+  `hook_gadget_pool_zaxis_skip.js`（`SKIP+POOL+ZAXIS`，推荐，**2026-11-01 重生成后 `eef48793f17b`**）、
+  `hook_gadget_local_pool_zaxis_skip.js`（同一份但 `MODE=local`：重定向到 127.0.0.1 且把 sockaddr 的 443 改 9443，
+  跑手机 APK 假服才用，`14901874a19e`，见 [安卓 APK 假服](README-安卓APK假服.md)）、
+  `hook_gadget_all_skip.js`（`SKIP`）、`hook_gadget_pool_skip.js`（`SKIP+POOL`，卡池那轮真机用过的）、
+  `hook_gadget_zaxis_skip.js`（`SKIP+ZAXIS`，只想验高度时用）、`hook_gadget_pool_zaxis.js`（`WATCH+POOL+ZAXIS`）、
+  `hook_gadget_all.js` 基线（`WATCH`，30,282 B，`eb25037ef732`）。全量 md5 看 `./frida/make_variants.sh` 自己的输出，
+  **手机上现在还是 `device-phase5-pool-zaxis-skip/` = `ac38fa9d8a21`（26,608 B，卡池 + 高度 + 跳视频，quiet）** ——
+  10-18 两轮真机确认的就是它（卡池全开、战斗可升降）。11-01 那轮把设备侧共享块和
+  `hook_redirect_trust.js` 同步上了（多了端口改写 + `net=` 字段），**隧道模式行为不变，所以没重新推**；
+  下次上机先核 `脚本装载 … net=tunnel` 这行在不在，在就说明已经是新的一份。
   遗留：`WATCH` 版仍会卡在登录界面（§6），所以带 `POOL` 的一律配 `SKIP`；
   `loginLoop.usm` 那批资源铺回去之后应当切回不带 `SKIP` 的版本。

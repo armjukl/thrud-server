@@ -32,7 +32,7 @@ SLD_FRIDA=<YOUR_SERVER_IP>:27049   # 默认值，见各脚本
 | `frida/auto_spawn.py` | 守护进程：轮询 → 发现手动启动的游戏就 kill → spawn + 挂 hook；崩溃自动重开 |
 | `frida/run_dump.py` | 附着已跑进程，跑 `il2cpp_dump.js` → `il2cpp_runtime_dump.cs`（类 / 方法 / 字段 / 偏移 / RVA） |
 | `frida/hook_sld.js` | 默认 agent：`liblua54.so` 加载入口抓 Lua chunk + `libc` UDP 收发抓 KCP 数据报 |
-| `frida/hook_redirect_trust.js` | `getaddrinfo` 把死域名改写到隧道 IP + Java 侧 trust-all（让客户端连上假服） |
+| `frida/hook_redirect_trust.js` | `getaddrinfo` 把死域名改写到假服 IP + sockaddr 端口就地改写（`MODE='local'` 时 127.0.0.1:443→9443，见 [安卓 APK 假服](README-安卓APK假服.md) §0）+ Java 侧 trust-all |
 | `frida/hook_gadget_all.js` · `hook_gadget_all_skip.js` | 上面那份 + il2cpp 块，给 **gadget 冷启动**用（WATCH 观测 / SKIP 跳过登录视频预载），见 [`README-注入器gadget.md`](README-注入器gadget.md) |
 | `frida/hook_netflow.js` · `hook_java_net.js` | 只侦察：列出 `getaddrinfo` / `connect` 目标、SDK 打开的所有 URL |
 | `frida/il2cpp_*.js` | 运行时 IL2CPP 探针（dump / 按类名挂钩 / 找字段 / 反汇编） |

@@ -4,7 +4,7 @@
 
 本文只写**现在真正在用**的口径。历史推演过程不在这里，去 `docs/old/PROJECT-LOG.md`（已归档，结论可能过时）。
 
-专题文档：[功能对比与现状](README-功能对比.md) · [协议清单](README-协议清单.md) · [待补功能](README-待补功能.md) · [资源指引](README-资源指引.md) · [存档修改](README-存档修改.md) · [frida 抓包](README-frida抓包.md) · [注入器 gadget](README-注入器gadget.md) · [战斗移动轴与高度解锁](README-战斗移动轴与高度解锁.md) · [改包签名校验](README-改包签名校验.md) · [改Lua脚本](README-改Lua脚本.md) · 路 B 到头：只靠 hook 的本地化（[`../../frida-gadget/README.md`](../../frida-gadget/README.md)，复刻 PC 纪念版）
+专题文档：[功能对比与现状](README-功能对比.md) · [协议清单](README-协议清单.md) · [待补功能](README-待补功能.md) · [资源指引](README-资源指引.md) · [存档修改](README-存档修改.md) · [frida 抓包](README-frida抓包.md) · [注入器 gadget](README-注入器gadget.md) · [战斗移动轴与高度解锁](README-战斗移动轴与高度解锁.md) · [改包签名校验](README-改包签名校验.md) · [改Lua脚本](README-改Lua脚本.md) · [安卓 APK 假服](README-安卓APK假服.md) · 路 B 到头：只靠 hook 的本地化（[`../../frida-gadget/README.md`](../../frida-gadget/README.md)，复刻 PC 纪念版）
 
 ---
 
@@ -23,6 +23,7 @@
 | 养成（升级/突破/星级/技能/式杖） | 🚧 分支 `gs-parity` · B1 已落 9 条：`1001`（原来是"每次 +1 级"的简化版）+ 新接 `1002 1003 1004 1005 1008 1010 1011 1016`，真扣材料 / 真走曲线 / 满级与材料不足**拒单不推 push**（见 [协议清单](README-协议清单.md) §4.1）；真机一轮待跑 |
 | 武装（突破/强化/分解/上锁/精炼/洗练） | 🚧 分支 `gs-parity` · B2 已落 7 条 `1201 1202 1204 1205 1207 1208 1209`：新建 `src/weapons.ts`，`WeaponInfo` 的随机字段 **17/18** 第一次真编出来，实例列表改成落盘的单一真相（见 [协议清单](README-协议清单.md) §4.2/§4.3）；真机一轮待跑（先备材料，见 [存档修改](README-存档修改.md)） |
 | 假服地基（对齐路 B） | 🚧 分支 `gs-parity`：36 张整表进 `src/data/tbl/` + `tbl.ts` 取数面、`econ.ts`/`skills.ts`/`weapons.ts` 扣费发奖与升级曲线、`save.ts` 原子写 + `.bak` 回退 + 结构迁移，自检 66/66；`HANDLERS` 56 条；第一档余 **B3 通关 / B4 挂机 / B5 任务 / B6 签到**（见 [待补功能](README-待补功能.md)） |
+| 手机自服 APK | 🚧 分支 `apk-server`：nodejs-mobile（Node 18.20.4 libnode）内嵌 + 前台服务 + WebView 管理页（开关假服 / 改存档 / 看日志），非 root 绑不了 443 由 gadget 把 sockaddr 端口就地改写 443→9443；离线自检 78/78，**真机一轮还没跑**（[安卓 APK 假服](README-安卓APK假服.md)） |
 
 剩余问题全部是**服务端协议未实现**，不是资源/客户端问题。扣费/经验/曲线这类原语此前在 `src/`
 里一个都没有（旧 41 条 handler 无一条减过库存），现在地基到位、养成已按表扣费，缺的只是把余下命令逐条接上去。
@@ -83,6 +84,9 @@
 - **协议层**：`payloads.ts`（S2C 构造 + 处理器表）、`gs.ts`（`/AppInterface` 编解码）。
 - **HTTP 层**：`http.ts`（HTTP 路由）/ `index.ts`（装配）。
 - 构建：`npm run build` → `dist/`；`npm run typecheck`；`npm run selftest`。
+  安卓那条产物另走 `npm run build:cjs` → `dist-cjs/`（同一份源码，`module:CommonJS`），
+  `npm run selftest:cjs` 用 `SLD_DIST=dist-cjs` 复跑同一套自检，`npm run pack:android` 把产物铺成 APK 的 assets
+  （见 [安卓 APK 假服](README-安卓APK假服.md) §2）。
 - 运行脚本已内建 `npm run build`，源码改动后直接 `./run.sh` 即可。
 
 ---
@@ -161,6 +165,10 @@
                                           └─ 80  → 127.0.0.1:9080 (无监听, 预期报 refused)
 ```
 
+另一条：**手机本地自服**（分支 `apk-server`，不需要 PC 和隧道）——假服整个塞进 APK 跑在手机自己身上，
+全在 `127.0.0.1`，非 root 绑不了 443 所以由 gadget 脚本把 sockaddr 里的端口就地改成 9443。
+详见 [安卓 APK 假服](README-安卓APK假服.md)。
+
 ### 端口 / 环境变量
 
 | 变量 | 默认 | 说明 |
@@ -168,6 +176,9 @@
 | `SLD_TLS=1` | — | HTTP 侧只起 HTTPS |
 | `SLD_HTTP_PORT` | 9443 | HTTP(S) 侧 |
 | `SLD_KCP_PORT` | 19005 | KCP/UDP 网关 |
+| `SLD_ROOT` | 自动上溯 | 代码/仓库根（APK 侧由 `main.js` 显式传 `--root`；不设则从 `argv[1]` 往上找带 `sld-offline-server` 的 package.json） |
+| `SLD_DATA_DIR` | `<ROOT>/data` | 可写数据根（存档 / `logs/` / `capture/` / `admin.token`），APK 上指向外部 files 目录 |
+| `SLD_ADMIN_PORT` / `SLD_ADMIN_HOST` | 19080 / 127.0.0.1 | 管理面（开关假服 / 改存档 / 看日志）；绑非回环才要 `data/admin.token` |
 | `SLD_PUBLIC_HOST` | <YOUR_SERVER_IP> | 回给客户端的公网地址（serverUrlData / 服务器列表） |
 | `SLD_APK` | 见 config.ts | 覆盖 APK 路径（仅工具链/selftest 用） |
 | `SLD_GACHA_FORCE_QUALITY` | 0 | 抽卡调试：>0 强制该品质出货（5=金）；0=按池真实掉落 |
@@ -202,12 +213,14 @@
 |---|---|---|
 | `npm run typecheck` | 5.99 s，峰值 RSS 357 MB | ≤ 8 s |
 | `npm run build`（`rm -rf dist` 后） | 6.33 s，峰值 RSS 371 MB | ≤ 15 s |
-| `npm run selftest`（66 条） | 23 s，峰值 RSS 169 MB | — |
+| `npm run selftest`（78 条） | 24 s，峰值 RSS 180 MB | — |
 | `src/data/tbl` / `dist` 体积 | 13 MB / 15 MB | — |
 | 36 张表全 parse（25 193 行） | 103 ms | 起服增量 ≤ 400 ms |
 | `payloads.ts` 模块图加载 | 36 ms（惰性 parse，未取到的表不花钱） | — |
 
 （2026-10-29 B2 后重测：新增 `weapons.ts` 与 20 条自检，typecheck 4.82→5.99 s、build 5.60→6.33 s，仍在阈值内。）
+（2026-11-01 `apk-server` 后重测自检那一行：66→78 条，23→24 s / 169→180 MB —— 多出来的 12 条里有 node18 起服与探针子进程，
+所以涨幅比条数看起来小。）
 
 形状必须是 `const RAW = "<整表 JSON 单行>"` + `JSON.parse`：**类型化字面量在 4.6 MB 单文件上会让 tsc OOM**（161 s 后被杀），
 而 `JSON.parse` 形状 10.58 MB / 32 表只要 1.08 s。单文件超 4 MB 时生成器自动切列存 `{"c":[cols],"r":[[…]]}`（同批小 3.6×），由 `tbl.ts` 展开，业务代码不改。
@@ -319,7 +332,7 @@ fuser -k -n tcp 9443 19005
 ```bash
 npm ci                   # 安装 TS 依赖（离线可从 fakeserverts/node_modules 拷一份）
 npm run build            # tsc -> dist/
-npm run selftest         # 46 条：KCP/帧/网关/HTTP 桩/战斗/抽卡/整表/存档/经济/技能/proto required/B1 养成/工具链
+npm run selftest         # 78 条：KCP/帧/网关/HTTP 桩/战斗/抽卡/整表/存档/经济/技能/proto required/B1 养成/启停/管理面/安卓壳/工具链
 ```
 
 前提：`res/` 已就位（`res/phone/`、`res/apk/`）。
