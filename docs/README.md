@@ -45,6 +45,7 @@
 │   │   ├── sld_1.0.7.1426_bilibili.apk   ← 客户端用这个
 │   │   └── sld_1.0.7.1428_nearme.apk     ← 渠道服版，不需要装
 │   └── backup/                     归档（PC 纪念版 / 旧解包 / probe / 老文档数据）
+├── apkbuild/                     我们自己编出来的 APK（probe / server，装机用；不是游戏包，别混进 res/apk）
 └── offline-server/              假服 = git 仓库（TypeScript 工程）
     ├── src/                          TS 源码（唯一可信来源）
     │   ├── index.ts                   入口：UDP/KCP 网关 + HTTP(S)
@@ -66,6 +67,8 @@
     ├── data/  certs/  tools/  proto/  frida/  test/
     │                                    tools/gen_tables.py = 整表生成器（--tier 1 / --tables / --check）
     ├── docs/  ← 你在这里
+    ├── android/                    安卓壳（分支 apk-server）：main.js/bootstrap.js + :app 前台服务/WebView + :probe
+    │                                    build/ .cxx/ assets/{code,seed}/ 与 libnode 都不入库，见 README-安卓APK假服.md
     ├── logs/                         运行日志（gitignore）
     ├── run.sh                        启动（先 build 再 node dist）
     └── frpc-sld.toml
@@ -213,6 +216,7 @@
 |---|---|---|
 | `npm run typecheck` | 5.99 s，峰值 RSS 357 MB | ≤ 8 s |
 | `npm run build`（`rm -rf dist` 后） | 6.33 s，峰值 RSS 371 MB | ≤ 15 s |
+| `npm run build:cjs`（`rm -rf dist-cjs` 后） | 6.39 s，峰值 RSS 371 MB，产物 14 MB | 同上（安卓那条的产物） |
 | `npm run selftest`（78 条） | 24 s，峰值 RSS 180 MB | — |
 | `src/data/tbl` / `dist` 体积 | 13 MB / 15 MB | — |
 | 36 张表全 parse（25 193 行） | 103 ms | 起服增量 ≤ 400 ms |
