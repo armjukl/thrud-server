@@ -1,7 +1,7 @@
 // 自测: 不需要真客户端, 用合成 KCP 包验证 假服务端 能解析/回 ACK/按帧派发, 并验证
 // HTTP 桩与两个 python 工具可运行. 跑法: node test/selftest.mjs
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import dgram from 'node:dgram';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -376,6 +376,129 @@ await check('admin: 绑到 0.0.0.0 就必须有令牌, 首启生成 admin.token(
   } finally {
     await admin.close();
     fs.rmSync(tokenFile, { force: true });
+  }
+});
+
+// ---------------------------------------------------------------- 3d. APK 打包与铺盘
+// 拿不到 adb, "手机那套布局能不能跑"就只能在这里定: 用 Node 18(与 nodejs-mobile 同版本)
+// 按 assets/code/<buildCode>/main.js --data 独立目录 真起一次, 看管理端口回不回状态。
+const SIM = '/home/tmp/androidsim-selftest';
+const NODE18 = process.env.SLD_NODE18 || '/home/tmp/node18/bin/node';
+const readFile = (p) => fs.readFileSync(p);
+
+await check('seed: 只在缺失时铺, 已有存档一个字节都不动', async () => {
+  const { seedOnce, walkFiles } = await import(`../${DIST}/bootstrap.js`);
+  const tag = 'seed-' + Date.now();
+  const seed = path.join(SIM, tag, 'seed');
+  const data = path.join(SIM, tag, 'data');
+  fs.mkdirSync(path.join(seed, 'data'), { recursive: true });
+  fs.mkdirSync(path.join(seed, 'certs'), { recursive: true });
+  fs.writeFileSync(path.join(seed, 'data', 'save.json'), '{"seeded":true}');
+  fs.writeFileSync(path.join(seed, 'data', 'header-rule.json'), '{"seed":1}');
+  fs.writeFileSync(path.join(seed, 'certs', 'server.crt'), 'SEED-CRT');
+  try {
+    const r1 = seedOnce(seed, data, 'test-1');
+    assert.deepEqual(r1.copied.slice().sort(), ['certs/server.crt', 'data/header-rule.json', 'data/save.json'], '首启要把 seed 全铺下去');
+    assert.equal(r1.seedver, 'test-1', '.seedver 要记下这档是哪版铺的');
+    assert.equal(JSON.parse(readFile(path.join(data, 'data', 'save.json')).toString('utf8')).seeded, true);
+
+    // 玩家已经玩了一会儿: 再装一次 APK(又铺一遍盘)绝不许把进度刷回 seed
+    fs.writeFileSync(path.join(data, 'data', 'save.json'), '{"mine":"进度"}');
+    const r2 = seedOnce(seed, data, 'test-2');
+    assert.equal(r2.copied.length, 0, '第二次铺盘不该再动任何文件');
+    assert.deepEqual(r2.kept.slice().sort(), ['certs/server.crt', 'data/header-rule.json', 'data/save.json']);
+    assert.equal(JSON.parse(readFile(path.join(data, 'data', 'save.json')).toString('utf8')).mine, '进度', '已有存档必须原样留着 —— 这条挂了就是"更新 APK 把号练回初始"');
+    assert.equal(r2.seedver, 'test-1', '.seedver 已存在就不改写: 它记的是首启那版');
+
+    assert.deepEqual(walkFiles(seed).slice().sort(), ['certs/server.crt', 'data/header-rule.json', 'data/save.json'], 'walkFiles 要连子目录一起给');
+    assert.deepEqual(walkFiles(path.join(SIM, tag, '不存在')), [], 'seed 目录不存在不该炸');
+  } finally {
+    fs.rmSync(path.join(SIM, tag), { recursive: true, force: true });
+  }
+});
+
+await check('pack+node18: 按手机布局起假服(铺盘/管理面/HTTPS/存档落数据目录)', async () => {
+  const assets = path.join(SIM, 'assets');
+  const dataDir = path.join(SIM, 'slddata');
+  fs.rmSync(assets, { recursive: true, force: true });
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  const pack = path.join(ROOT, 'tools', 'pack_nodejs.mjs');
+  await exec(process.execPath, [pack, '--out', assets]); // 真产物不合格时 exec 会带着 stderr 抛
+  await exec(process.execPath, [pack, '--out', assets, '--check']); // 同一条断言独立跑一遍, 证明 --check 有牙
+  const bc = JSON.parse(readFile(path.join(assets, 'code', 'manifest.json')).toString('utf8')).buildCode;
+  const codeDir = path.join(assets, 'code', bc);
+  const seedDir = path.join(assets, 'seed');
+  assert.ok(fs.existsSync(path.join(codeDir, 'main.js')), 'code 里要有 main.js(nodejs-mobile 的入口)');
+  assert.ok(fs.existsSync(path.join(codeDir, 'data', 'tbl', 'Items.js')), '整表要跟着进 APK(假服起来要读它)');
+  assert.equal(JSON.parse(readFile(path.join(codeDir, 'package.json')).toString('utf8')).name, 'sld-offline-server', 'code/package.json 的 name 是 findRoot 的停车牌');
+  const seededFiles = ['data/save.json', 'data/header-rule.json', 'data/frame_prefix.txt', 'data/skipapi.json', 'data/getclientupdatedata.json', 'certs/server.key', 'certs/server.crt'];
+  assert.deepEqual(seededFiles.map((f) => fs.existsSync(path.join(seedDir, f))), seededFiles.map(() => true), 'seed 清单要齐');
+  const junk = ['data/save.json.bak', 'data/logs', 'data/capture', 'data/admin.token'].filter((f) => fs.existsSync(path.join(seedDir, f)));
+  assert.deepEqual(junk, [], `seed 里混进运行垃圾: ${junk}`);
+  if (!fs.existsSync(NODE18)) {
+    console.log(`  · 没有 node18(${NODE18}), 跳过实启, 只断言产物树`);
+    return;
+  }
+  const A = 19341, H = 19342, K = 19343;
+  const argv = [path.join(codeDir, 'main.js'), '--root', codeDir, '--data', dataDir, '--seed', seedDir, '--admin', String(A), '--http-port', String(H), '--kcp-port', String(K), '--build-code', bc];
+  const spawnBoot = async (expect) => {
+    const child = spawn(NODE18, argv, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (c) => { out += c; });
+    child.stderr.on('data', (c) => { out += c; });
+    const deadline = Date.now() + 40000; // 13MB 整表在 2 核小机上解析要几秒
+    while (!out.includes(expect) && Date.now() < deadline && child.exitCode === null) await wait(100);
+    return { child, out };
+  };
+  const kill = async (child) => {
+    if (child.exitCode === null) child.kill('SIGTERM');
+    const until = Date.now() + 5000;
+    while (child.exitCode === null && Date.now() < until) await wait(50);
+    if (child.exitCode === null) child.kill('SIGKILL');
+    // 端口真放开没有: 直连一次必须连不上(否则下一轮自启会撞 EADDRINUSE, 那是更难查的故障)
+    const refused = await fetch(`http://127.0.0.1:${A}/api/status`).then(() => false, () => true);
+    assert.equal(refused, true, '进程退了管理端口就该放开');
+  };
+  let b1;
+  try {
+    b1 = await spawnBoot('READY');
+    assert.match(b1.out, /READY/, `main.js 没起来自:\n${b1.out.slice(-500)}`);
+    assert.match(b1.out, /铺7\/留0/, '首启该铺 7 个文件');
+    assert.equal(b1.child.exitCode, null, 'READY 之后进程不该自己退出: ' + b1.out.slice(-300));
+    const st = await (await fetch(`http://127.0.0.1:${A}/api/status`)).json();
+    assert.equal(st.running, true, '管理面要说假服在跑');
+    assert.equal(st.node, 'v18.20.4', '实启必须与 nodejs-mobile 同版本, 否则这条证据不算数');
+    assert.equal(st.gateway.port, K);
+    assert.equal(st.logs, path.join(dataDir, 'data', 'logs'), '日志/存档都得落在 --data 指定的数据目录');
+    assert.equal(readFile(path.join(dataDir, 'data', 'save.json')).equals(readFile(SAVE_FILE)), true, '铺出来的存档要和仓库那份逐字节一致');
+    assert.equal(readFile(path.join(dataDir, '.seedver')).toString('utf8').trim(), bc);
+    assert.ok(!fs.existsSync(path.join(codeDir, 'data', 'save.json')), '代码目录里不许有存档: APK 更新会连档带码一起覆盖');
+    const { get } = await import('node:https');
+    // rejectUnauthorized:false 只针对本机这个自签证书(整个方案的前提就是客户端放水信任它),
+    // 这条断言要的是"seed 出来的 certs 真能被 https.createServer 用起来", 不是校验链。
+    const body = await new Promise((resolve, reject) => {
+      const rq = get({ host: '127.0.0.1', port: H, path: '/server/serverUrlData', rejectUnauthorized: false }, (r) => {
+        let s = '';
+        r.on('data', (c) => { s += c; });
+        r.on('end', () => resolve(s));
+      });
+      rq.on('error', reject);
+    });
+    assert.match(body, /"urlList":\["https:\/\/127\.0\.0\.1:443"\]/, '手机上的 GS 域名必须是 127.0.0.1:443, 由 gadget 改端口');
+    await kill(b1.child);
+
+    // 同一个数据目录再起: 铺 0 留 7, 存档字节不动 —— 这就是"更新 APK 不掉档"
+    const before = readFile(path.join(dataDir, 'data', 'save.json'));
+    const b2 = await spawnBoot('READY');
+    try {
+      assert.match(b2.out, /铺0\/留7/, `再起不该铺任何文件:\n${b2.out.slice(0, 300)}`);
+      assert.equal(readFile(path.join(dataDir, 'data', 'save.json')).equals(before), true);
+    } finally {
+      await kill(b2.child);
+    }
+  } finally {
+    if (b1) await kill(b1.child).catch(() => {});
+    fs.rmSync(SIM, { recursive: true, force: true });
   }
 });
 
