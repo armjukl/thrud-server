@@ -40,7 +40,8 @@
   "money":     { "11": 9999999 },
   "cloths":    [ 4001101 ],
   "wskin":     [ 6011010 ],
-  "levels":    { "101101": [1,2,3] },
+  "levels":    { "101101": { "id": 101101, "passTime": 42, "todayAttackNum": 1, "attackNum": 1,
+                              "lastAttackTime": 1793201542089, "stars": [1,2,3] } },
   "trainLevels": { "100101": { "id": 100101, "passTime": 30, "todayAttackNum": 1, "attackNum": 1,
                                "lastAttackTime": 1793201542089 } },
   "gacha":     { "5001": 10 },
@@ -88,15 +89,15 @@
 | `money` | 货币 `itemId→数量` | `PlayerLoginGetInfo_S2C.moneyPart(62)` |
 | `cloths` | 已拥有角色战装(皮肤) id | `clothingInfo(41)` |
 | `wskin` | 已拥有武装涂装 id | `weaponSkinInfo(45)` |
-| `levels` | 主线通关：`关卡id→星级数组` | `mainLevelInfo(63)`（`OverMainLevel` 胜利自动写回） |
+| `levels` | 主线通关：`关卡id→记录`（B4 起与 `trainLevels` 同形，多一个 `stars`）。**老档的 `{"101101":[1,2,3]}`（id→星级数组）会自动升上来** | `mainLevelInfo(63)`（`OverMainLevel` 胜利自动写回） |
 | `trainLevels` | 训练本通关：`关卡id→记录`。**老档的 `[100101]` 会自动升上来**（`passTime` 兜 30 秒） | `trainLevelInfo(64)` |
-| `trainLevels[].passTime` | 单局秒数 —— 挂机/扫荡按它折算单位产出，**给 0 等于"瞬间打完"，奖励池会被算空** | `TrainLevelInfo` required 8 + `HangUpInfo` |
+| `levels[].passTime` / `trainLevels[].passTime` | 单局秒数 —— **挂机把这一列当"单场时长"，而且是客户端拿它做除法**（`math.ceil(剩余秒/单场秒)`），给 0 进度全废。读档经 `safePassTime()` 兜底：0/负/小数一律变 **30 秒**，所以手改档改不出"除零"，但也别指望写 0 能"瞬间挂完" | `TrainLevelInfo` required 8 / `MainLevelInfo` 10 + `HangUpInfo` |
 | `gacha` | 抽卡：`卡池id→已抽次数` | 登录 `swearInfo(20)` |
 | `signin` | 月签到：`month`/`times`/`day`/`lastTime`（当天已签时不再弹面板） | 登录 `monthSign(80)` + `GetSignReward(10051)` |
 | `tasks` | 任务/活跃度：`taskChapter` **默认 101**、`dayGroupIndex` **默认 10001**（144 条 `condition=3100` 的任务选错组会打死 `PatrolDataManager`）、`dayTaskPoint`/`weekTaskPoint`、`passedTasks`(taskId→1)、`progress`(taskId→进度)、`passedDayPoints`/`passedWeekPoints`(已领的活跃度箱 id)、`rollDay`/`rollWeek`(上次跨日/跨周刷新的**ms**锚点) | `taskProgress`(登录) + `SubmitTask`/`GetActivePointReward` |
 | `bg` | 初心者+七日签到：`open`(**秒**时间戳，活动开启时刻)、`sign`(已签天数)、`signTime`(**秒**，上次签到)、`bingo`(已领的 bingo 行 id)、`redDot`(bool) | `FirstThought_S2C.thoughtInfo` + `SignBingoReward` |
 | `bgVersion` | 结构迁移哨兵（`< BG_SCHEMA` 才补锚点），**手改它只会让迁移再跑一遍**，别当开关用 | — |
-| `hangUp` | 挂机/外派会话：`type`/`levelId`/`times`/`startTime`(**秒**)/`endTime`(**秒**)/`state`（0=没在挂；`HangUpInfo.state` 是 required **int64**） | `GetHangUpInfo(30400)` 一族 |
+| `hangUp` | 挂机/外派会话：`type`(1=主线 2=训练)/`levelId`/`times`/`startTime`(**秒**)/`endTime`(**秒**)/`state`（`0=没在挂或已领 · 1=挂机中 · 2=完成未领`，`HangUpInfo.state` 是 required **int64**）。**手改这一格就能造一次挂机**：写 `state=1` + `endTime` 在过去 → 下一次 `30400` 翻成 2、红点亮、可领奖；`times` 超过 10 会被 `30401` 的上限拦住（但已写进档的会话不受限） | `GetHangUpInfo(30400)` 一族 |
 | `wSeq` | 武装 `onlyId` 发号器（当前值 +1 拼成号） | — |
 | `regTime` | 建档时刻(**秒**)，七日/体力回算的锚点 | `FirstThought` 的 `signTimeStamp` 等 |
 

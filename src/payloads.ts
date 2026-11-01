@@ -26,13 +26,17 @@ import { poolDraw } from "./gacha.js";
 import {
   addExp, addItem, addMoney, checkConsume, countItem, fixedRewardItems, grantWeapon, ITEMTYPE, itemType,
   leaderLevelExp, leaderMaxLv, newEffects, payConsume, payItemList, upgradeByExp, weaponLevelExp,
-  weaponMaxLv, type Effects,
+  weaponMaxLv, type Effects, type RewardItem,
 } from "./econ.js";
+import {
+  cancelHangUp, emptySettleBuf, hangUpSweep, infoBuf, receiveHangUpReward, refreshState,
+  singleTime, speedUpHangUp, startHangUp,
+} from "./hangup.js";
 import { setSkillLv, skillConsumeId, skillLv, stickMaxLv, upgradeSkill } from "./skills.js";
 import { all, arr, num, row } from "./tbl.js";
 import {
   characterById, defaultCharacter, emptyRand, loadSave, newLevelRecord, saveSave,
-  type SaveCharacter, type SaveData, type SaveWeapon, type SaveWeaponRand,
+  type SaveCharacter, type SaveData, type SaveMainLevel, type SaveWeapon, type SaveWeaponRand,
 } from "./save.js";
 import {
   RECAST_PROP, RECAST_SKILL, SELECT_NEW, SELECT_OLD, applyPending, breakConsume, defLeaderOf,
@@ -134,6 +138,13 @@ export const CMD = {
   SelectWeaponRandomInfo: 1209,
   GetPayShopData: 30300,
   DataPush: 900011,
+  // 挂机/外派 (B4). S2C 都是 required info=1 (+ settleInfo=2), 少一个字段客户端 pbNew.decode 就报错.
+  GetHangUpInfo: 30400,
+  StartHangUp: 30401,
+  HangUpSpeedUp: 30402,
+  ReceiveHangUpReward: 30403,
+  HangUpCancel: 30404,
+  HangUpSweep: 30405,
   // 抽卡(简化)
   SwearHero: 2000,
   SelectSwearChange: 2001,
@@ -441,13 +452,21 @@ function weaponSkinInfoBody(s: SaveData): Buffer | null {
 }
 
 // 主线通关 -> MainLevelInfo{ required id=1; stars=2; todayAttackNum=3; attackNum=4; lastAttackTime=5; passTime=10 }.
+// passTime 恒发 0 的那版已废: 客户端拿它当"单场时长"算挂机场次 (HangUpBattleDataMgr.GetPassedMinTime),
+// 除以 0 得到 inf -> 剩余次数无穷、进度条永远不动. 记录里必须有个真秒数, 见 save.ts 的 30 秒兜底.
+function mainLevelInfoBody(r: SaveMainLevel): Buffer {
+  return pb.concat(
+    pb.vfield(1, r.id),                    // id (required)
+    ...r.stars.map((v) => pb.vfield(2, v)),// stars
+    pb.vfield(3, r.todayAttackNum),        // todayAttackNum
+    pb.vfield(4, r.attackNum),             // attackNum
+    pb.vfield(5, BigInt(r.lastAttackTime || Date.now())), // lastAttackTime (ms)
+    pb.vfield(10, r.passTime),             // passTime (required)
+  );
+}
+
 function mainLevelInfoEntries(s: SaveData): Buffer[] {
-  const now = BigInt(Date.now());
-  return Object.entries(s.levels).map(([k, stars]) => pb.concat(
-    pb.vfield(1, Number(k)),
-    ...(stars || []).map((v) => pb.vfield(2, v)),
-    pb.vfield(3, 1), pb.vfield(4, 1), pb.vfield(5, now), pb.vfield(10, 0),
-  ));
+  return Object.values(s.levels).map(mainLevelInfoBody);
 }
 
 // 训练本通关 -> TrainLevelInfo{ required id=1; todayAttackNum=2; attackNum=3; lastAttackTime=4; required passTime=8 }.
@@ -1008,23 +1027,14 @@ function settleExp(s: SaveData, table: string, levelId: number, eff: Effects): n
 // Data_Push{ playerChangeExpandLvl=1{curLevel,curExp} }: 顶栏等级/经验条的唯一数据源, 不推就得重登才跳;
 // 升级补的体力走 changeStrength=3, 否则"弹了 +10 却没到账".
 function playerExpPush(s: SaveData, eff: Effects): Buffer | null {
-  if (!eff.player) return null;
-  const parts = [pb.bfield(1, pb.concat(pb.vfield(1, s.player.level), pb.vfield(2, s.player.exp)))];
+  if (!eff.player && !eff.strength) return null;
+  const parts: Buffer[] = [];
+  if (eff.player) parts.push(pb.bfield(1, pb.concat(pb.vfield(1, s.player.level), pb.vfield(2, s.player.exp))));
   if (eff.strength) parts.push(pb.bfield(3, pb.vfield(1, s.player.strength)));
   return pb.concat(...parts);
 }
 
-// MainLevelInfo{ required id/passTime }
-function mainLevelInfoBody(id: number, stars: number[], passTime: number): Buffer {
-  return pb.concat(
-    pb.vfield(1, id),                    // id (required)
-    ...stars.map((v) => pb.vfield(2, v)),// stars
-    pb.vfield(3, 1),                     // todayAttackNum
-    pb.vfield(4, 1),                     // attackNum
-    pb.vfield(5, BigInt(Date.now())),    // lastAttackTime (ms)
-    pb.vfield(10, passTime),             // passTime (required)
-  );
-}
+// MainLevelInfo{ required id/passTime } 的编码在 mainLevelInfoBody (登录包与结算回包共用).
 
 function overMainLevelS2C(req: GsRequest): GsResult {
   const s = loadSave();
@@ -1036,27 +1046,37 @@ function overMainLevelS2C(req: GsRequest): GsResult {
   const pass = passTime || 30;                // 0 会被客户端当"瞬间打完", 扫荡/挂机按它算场次
   const before = { level: s.player.level, exp: s.player.exp };
   const eff = newEffects();
-  // 通关落盘: 星级写进 levels(重登仍保留), firstPass 看落盘前有没有这条记录.
-  const firstPass = win && !!levelId && !s.levels[String(levelId)];
+  // 通关落盘: 记录写进 levels(重登仍保留), firstPass 看落盘前有没有这条记录.
+  const key = String(levelId);
+  const firstPass = win && !!levelId && !s.levels[key];
   const fresh = uniqueId !== settledUniqueId;
   let exp = 0;
   if (win && levelId) {
-    const prev = s.levels[String(levelId)] || [];
-    s.levels[String(levelId)] = [...new Set([...prev, ...stars])].sort((a, b) => a - b);
+    const prev = s.levels[key];
+    const r = prev ?? { ...newLevelRecord(levelId, pass), stars: [] };
+    if (prev) { r.todayAttackNum += 1; r.attackNum += 1; }
+    r.lastAttackTime = Date.now();
+    r.passTime = passTime || r.passTime;
+    r.stars = [...new Set([...r.stars, ...stars])].sort((a, b) => a - b);
+    s.levels[key] = r;
     if (fresh) exp = settleExp(s, "MainLevel", levelId, eff);
     settledUniqueId = uniqueId;
     saveSave(s);
   }
   log("info", "battle", `OverMainLevel level=${levelId} result=${result} stars=[${stars.join(",")}] passTime=${pass} uniqueId=${uniqueId} +exp=${exp} 统御 ${before.level}->${s.player.level}`);
   const push = playerExpPush(s, eff);
+  // 客户端 OverMainLevelHandler: msg.result 为真就**无条件**读 msg.mainLevelInfo.id —— 所以 result 与
+  // mainLevelInfo 必须同进同出。认不出关卡(假服重启后 lastBattle 清零)时宁回 result=0:
+  // 少一次结算展示, 但不会让它 index 到 nil。
+  const rec = win && levelId ? s.levels[key] : null;
   return {
     body: pb.concat(
       pb.vfield(1, uniqueId),                 // uniqueId (required)
       pb.vfield(2, levelId),                  // battleId (required)
-      pb.vfield(3, win ? 1 : 0),              // result
+      pb.vfield(3, rec ? 1 : 0),              // result
       pb.vfield(6, pass),                     // passTime (required)
       pb.bfield(7, overSoloPlayerInfo(before, s)),    // playerInfo (required)
-      pb.bfield(8, mainLevelInfoBody(levelId, stars, pass)), // mainLevelInfo
+      ...(rec ? [pb.bfield(8, mainLevelInfoBody(rec))] : []), // mainLevelInfo
       pb.vfield(9, firstPass ? 1 : 0),        // firstPass
       pb.vfield(10, 1),                       // multipleValue
     ),
@@ -1113,6 +1133,110 @@ function overTrainLevelS2C(req: GsRequest): GsResult {
       pb.vfield(10, 1),                       // multipleValue
     ),
     pushes: push ? [[CMD.DataPush, push]] : [],
+  };
+}
+
+// ---- 挂机/外派 (B4: 30400-30405) ----
+// 会话存在存档 s.hangUp(**秒**), 校验/结算/状态机都在 src/hangup.ts; 这里只负责 GS 帧的拼法.
+// 奖励一律走 ShowItem_Push{ comeFrom=ActionEnum.HangUpGet=702 }: 客户端只有这一支把奖励交给
+// HangUpBattleDataMgr 弹窗 (700/701/703/704 在 Lua 里没有分支 -> 只会走通用"获得物品"窗).
+const ACTION_HANGUP_GET = 702;
+const nowSec = (): number => Math.floor(Date.now() / 1000);
+
+/** 挂机结算后的两条推送: 顶栏数值刷新 + 奖励展示 (ShowItem_Push 不能走 replenish 通道). */
+function hangUpRewards(s: SaveData, eff: Effects, rewards: RewardItem[]): Array<[number, Buffer]> {
+  const out: Array<[number, Buffer]> = [];
+  const push = playerExpPush(s, eff);
+  if (push) out.push([CMD.DataPush, push]);
+  if (rewards.length) {
+    out.push([CMD.ShowItemPush, pb.concat(
+      pb.vfield(1, ACTION_HANGUP_GET),
+      pb.bfield(2, rewardsBuf(rewards.map((r) => [r.itemId, r.count] as [number, number]))),
+    )]);
+  }
+  return out;
+}
+
+function getHangUpInfoS2C(): GsResult {
+  const s = loadSave();
+  const sec = nowSec();
+  // 到点翻转是这条读请求的职责: 客户端数到 endTime 只会重发 GetHangUpInfo, 自己不改状态.
+  const flipped = refreshState(s.hangUp, sec);
+  if (flipped) saveSave(s);
+  const h = s.hangUp;
+  log("info", "hangup", `GetHangUpInfo state=${h.state}${flipped ? "(到点 1->2)" : ""} level=${h.levelId || "-"} times=${h.times} 剩 ${Math.max(0, h.endTime - sec)}s`);
+  return pb.bfield(1, infoBuf(h)); // GetHangUpInfo_S2C{ required HangUpInfo info=1 }
+}
+
+function startHangUpS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const type = reqNum(req, 1) ?? 0;
+  const levelId = reqNum(req, 2) ?? 0;
+  const times = reqNum(req, 3) ?? 0;
+  const eff = newEffects();
+  const op = startHangUp(s, eff, type, levelId, times, nowSec());
+  if (op.deny) return { body: Buffer.alloc(0), pushes: [], deny: `StartHangUp ${op.deny}` };
+  saveSave(s);
+  const h = s.hangUp;
+  log("info", "hangup", `StartHangUp type=${type} level=${levelId} times=${times} 单场=${singleTime(s, type, levelId)}s 扣感知=${op.cost ?? 0} -> 结束于 ${h.endTime}`);
+  const push = playerExpPush(s, eff);
+  return { body: pb.bfield(1, infoBuf(h)), pushes: push ? [[CMD.DataPush, push]] : [] };
+}
+
+function hangUpSpeedUpS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const times = reqNum(req, 1) ?? 0;
+  const op = speedUpHangUp(s, times, nowSec());
+  if (op.deny) return { body: Buffer.alloc(0), pushes: [], deny: `HangUpSpeedUp ${op.deny}` };
+  saveSave(s);
+  const h = s.hangUp;
+  log("info", "hangup", `HangUpSpeedUp +${times}场 -> endTime=${h.endTime} state=${h.state} (表里没有加速道具, 这一步不扣东西)`);
+  return pb.bfield(1, infoBuf(h)); // HangUpSpeedUp_S2C{ required info=1 }
+}
+
+/** 领取/召回的回包同形: info=1 + settleInfo=2(required). settleInfo 给空消息, 见 src/hangup.ts 头注. */
+function hangUpSettleBody(s: SaveData): Buffer {
+  return pb.concat(pb.bfield(1, infoBuf(s.hangUp)), pb.bfield(2, emptySettleBuf()));
+}
+
+function receiveHangUpRewardS2C(): GsResult {
+  const s = loadSave();
+  const eff = newEffects();
+  const lv = s.player.level;
+  const op = receiveHangUpReward(s, eff, nowSec());
+  if (op.deny) return { body: Buffer.alloc(0), pushes: [], deny: `ReceiveHangUpReward ${op.deny}` };
+  saveSave(s);
+  log("info", "hangup", `ReceiveHangUpReward ${op.times}场 -> 发 [+exp=${op.exp ?? 0} 统御->${lv}${s.player.level > lv ? "↑" : ""}] 物品[${(op.rewards ?? []).map((r) => `${r.itemId}×${r.count}`).join(",")}]`);
+  return { body: hangUpSettleBody(s), pushes: [], extra: hangUpRewards(s, eff, op.rewards ?? []), mainInCompleted: true };
+}
+
+function hangUpCancelS2C(): GsResult {
+  const s = loadSave();
+  const eff = newEffects();
+  const op = cancelHangUp(s, eff, nowSec());
+  if (op.deny) return { body: Buffer.alloc(0), pushes: [], deny: `HangUpCancel ${op.deny}` };
+  saveSave(s);
+  log("info", "hangup", `HangUpCancel 已完成 ${op.times}场(结算发出) 返还感知=${op.back ?? 0} 物品[${(op.rewards ?? []).map((r) => `${r.itemId}×${r.count}`).join(",")}]`);
+  return { body: hangUpSettleBody(s), pushes: [], extra: hangUpRewards(s, eff, op.rewards ?? []), mainInCompleted: true };
+}
+
+// 扫荡 30405: S2C **只有** settleInfo=1 (没有 info) —— 客户端 HangUpSweepHandler 也只看 settleInfo,
+// 奖励靠随后那条 ShowItem_Push(702): 它先把 IsCanShowPopRewards 置 false 存住, 扫荡横幅 3 秒后放行.
+function hangUpSweepS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const type = reqNum(req, 1) ?? 0;
+  const levelId = reqNum(req, 2) ?? 0;
+  const times = reqNum(req, 3) ?? 0;
+  const eff = newEffects();
+  const op = hangUpSweep(s, eff, type, levelId, times);
+  if (op.deny) return { body: Buffer.alloc(0), pushes: [], deny: `HangUpSweep ${op.deny}` };
+  saveSave(s);
+  log("info", "hangup", `HangUpSweep type=${type} level=${levelId} times=${times} 扣感知=${op.cost ?? 0} 发物品[${(op.rewards ?? []).map((r) => `${r.itemId}×${r.count}`).join(",")}] +exp=${op.exp ?? 0}`);
+  return {
+    body: pb.bfield(1, emptySettleBuf()),
+    pushes: [],
+    extra: hangUpRewards(s, eff, op.rewards ?? []),
+    mainInCompleted: true,
   };
 }
 
@@ -1759,6 +1883,13 @@ export const HANDLERS: Record<number, GsBuilder> = {
   [CMD.BattleLeave]: battleAck("BattleLeave"),
   [CMD.CloseBattleSettle]: battleAck("CloseBattleSettle"),
   [CMD.BattleLeaveFinishS2C]: battleAck("BattleLeaveFinish"),
+  // 挂机/外派 (B4): 会话在存档 hangUp(**秒**), 到点靠 GetHangUpInfo 翻 1->2, 奖励走 ShowItem_Push(702)
+  [CMD.GetHangUpInfo]: getHangUpInfoS2C,
+  [CMD.StartHangUp]: startHangUpS2C,
+  [CMD.HangUpSpeedUp]: hangUpSpeedUpS2C,
+  [CMD.ReceiveHangUpReward]: receiveHangUpRewardS2C,
+  [CMD.HangUpCancel]: hangUpCancelS2C,
+  [CMD.HangUpSweep]: hangUpSweepS2C,
   // 抽卡
   [CMD.SwearHero]: swearHeroS2C,
   [CMD.SelectSwearChange]: () => Buffer.alloc(0),

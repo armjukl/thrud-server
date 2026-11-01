@@ -79,6 +79,15 @@ export interface SaveLevelRecord {
   lastAttackTime: number;
 }
 
+/**
+ * 主线关记录 = 通关记录 + 星级 (MainLevelInfo.stars=2 只有主线有, 训练本表里没这一列).
+ * 单独一个类型是为了让 levels 和 trainLevels 共用 passTime 那套兜底与日界清零.
+ */
+export interface SaveMainLevel extends SaveLevelRecord {
+  /** 已拿到的星 (1..3, 去重升序) */
+  stars: number[];
+}
+
 /** 任务/活跃度 (原写死在 payloads.ts 的 taskProgress 那一块搬进来). */
 export interface SaveTasks {
   /** 主线章节索引 (TaskProgressInfo.taskChapter). 默认 101. */
@@ -195,8 +204,8 @@ export interface SaveData {
   cloths: number[];
   /** 已拥有武装涂装 id 列表 (weaponSkinInfo.existIdSet). */
   wskin: number[];
-  /** 主线关卡通关进度: levelId(字符串) -> 星级数组 (mainLevelInfo). */
-  levels: Record<string, number[]>;
+  /** 主线关卡通关记录: levelId(字符串) -> 记录+星级 (mainLevelInfo). */
+  levels: Record<string, SaveMainLevel>;
   /** 训练关卡通关记录: levelId(字符串) -> 记录 (trainLevelInfo). 老档的 number[] 会自动升上来. */
   trainLevels: Record<string, SaveLevelRecord>;
   /** 抽卡: 卡池id(字符串) -> 已抽总次数. */
@@ -229,9 +238,19 @@ export function emptyRand(): SaveWeaponRand {
   return { skill: [], key: [], val: [], poolIdx: [], attrIdx: [], scope: 0 };
 }
 
+/**
+ * 通关耗时(秒)的安全值: 取整后不足 1 秒就兜 30. 挂机把这一列当"单场时长", 而且是**客户端**拿它做除法
+ * (HangUpBattleDataMgr 的 math.ceil(剩余秒/单场秒)), 0 会把剩余场次算成 inf -> 进度条整个废掉.
+ * 读档和建记录都从这过, 所以服务端不必再防"耗时为 0"的档.
+ */
+function safePassTime(v: unknown): number {
+  const p = Math.floor(Number(v));
+  return Number.isFinite(p) && p > 0 ? p : 30;
+}
+
 /** 一条通关记录; passTime 兜 30 秒的理由见 SaveLevelRecord 注释. */
 export function newLevelRecord(id: number, passTime = 30, nowMs = Date.now()): SaveLevelRecord {
-  return { id, passTime: passTime > 0 ? Math.floor(passTime) : 30, todayAttackNum: 1, attackNum: 1, lastAttackTime: nowMs };
+  return { id, passTime: safePassTime(passTime), todayAttackNum: 1, attackNum: 1, lastAttackTime: nowMs };
 }
 
 /**
@@ -329,11 +348,25 @@ const numMap = (v: unknown): Record<string, number> => {
 };
 // 解析数字数组 (非法值丢弃).
 const numArr = (v: unknown): number[] => (Array.isArray(v) ? v.map(Number).filter((n) => Number.isFinite(n)) : []);
-// 解析 { "id": [星级] } 映射.
-const levelMap = (v: unknown): Record<string, number[]> => {
-  const out: Record<string, number[]> = {};
-  if (v && typeof v === "object") {
-    for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = numArr(val);
+// 主线关卡记录: 两代形状都吃 —— 老档是 { "id": [星级] }, 新档是 { "id": 记录 }.
+// 老档没有耗时, 而挂机/扫荡把 passTime 当"单场时长"(见 SaveLevelRecord), 所以补 30 秒.
+const mainLevelMap = (v: unknown): Record<string, SaveMainLevel> => {
+  const out: Record<string, SaveMainLevel> = {};
+  if (!v || typeof v !== "object") return out;
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    const id = Number(k);
+    if (!Number.isFinite(id)) continue;
+    if (Array.isArray(val)) { out[k] = { ...newLevelRecord(id), stars: numArr(val) }; continue; }
+    if (val === null || val === undefined || typeof val !== "object") continue;
+    const o = val as Record<string, unknown>;
+    out[k] = {
+      id: num(o.id, id),
+      passTime: safePassTime(o.passTime),
+      todayAttackNum: num(o.todayAttackNum, 0),
+      attackNum: num(o.attackNum, 0),
+      lastAttackTime: num(o.lastAttackTime, 0),
+      stars: numArr(o.stars),
+    };
   }
   return out;
 };
@@ -370,10 +403,9 @@ const levelRecordMap = (v: unknown): Record<string, SaveLevelRecord> => {
       if (!Number.isFinite(id)) continue;
       if (val === null || val === undefined || typeof val === "number") { out[k] = newLevelRecord(id); continue; }
       const o = val as Record<string, unknown>;
-      const pt = num(o.passTime, 30);
       out[k] = {
         id: num(o.id, id),
-        passTime: pt > 0 ? Math.floor(pt) : 30,
+        passTime: safePassTime(o.passTime),
         todayAttackNum: num(o.todayAttackNum, 0),
         attackNum: num(o.attackNum, 0),
         lastAttackTime: num(o.lastAttackTime, 0),
@@ -461,7 +493,7 @@ export function normalizeSave(raw: unknown): SaveData {
     money: numMap(o.money),
     cloths: numArr(o.cloths),
     wskin: numArr(o.wskin),
-    levels: levelMap(o.levels),
+    levels: mainLevelMap(o.levels),
     trainLevels: levelRecordMap(o.trainLevels),
     gacha: numMap(o.gacha),
     signin: {

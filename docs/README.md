@@ -23,8 +23,9 @@
 | 养成（升级/突破/星级/技能/式杖） | 🚧 B1 已落 9 条：`1001`（原来是"每次 +1 级"的简化版）+ 新接 `1002 1003 1004 1005 1008 1010 1011 1016`，真扣材料 / 真走曲线 / 满级与材料不足**拒单不推 push**（见 [协议清单](README-协议清单.md) §4.1）；真机 2026-10-31 跑过一轮，1204/1205/1207/锁定洗练未覆盖 |
 | 武装（突破/强化/分解/上锁/精炼/洗练） | 🚧 B2 已落 7 条 `1201 1202 1204 1205 1207 1208 1209`：新建 `src/weapons.ts`，`WeaponInfo` 的随机字段 **17/18** 第一次真编出来，实例列表改成落盘的单一真相（见 [协议清单](README-协议清单.md) §4.2/§4.3）；随机数形状真机已核对 |
 | 通关结算 / 统御等级 | ✅ B3（2026-11-01）：`3005 OverTrainLevel` 新接 + `3004 OverMainLevel` 重构，胜利按 `userExpReward` 发导师经验、沿 `PlayerGrow` 滚级、推 `playerChangeExpandLvl`（升级那笔体力同包 `changeStrength`），星级/进本次数落盘；关卡 id 从 `11028` 的战斗上下文取、同 `uniqueId` 不重发经验（见 [协议清单](README-协议清单.md) §4.4）。**真机一轮待跑**；不扣进本体力、不发武将经验与首通三星奖励 |
-| 假服地基（对齐路 B） | 🚧 分支 `apk-server`（原 `gs-parity` 已并入）：36 张整表进 `src/data/tbl/` + `tbl.ts` 取数面、`econ.ts`/`skills.ts`/`weapons.ts` 扣费发奖与升级曲线、`save.ts` 原子写 + `.bak` 回退 + 结构迁移，自检 82/82；`HANDLERS` 57 条；第一档余 **B4 挂机 / B5 任务 / B6 签到**（见 [待补功能](README-待补功能.md)） |
-| 手机自服 APK | 🚧 分支 `apk-server`：nodejs-mobile（Node 18.20.4 libnode）内嵌 + 前台服务 + WebView 管理页（开关假服 / 改存档 / 看日志），非 root 绑不了 443 由 gadget 把 sockaddr 端口就地改写 443→9443；离线自检 82/82（ESM 与 CJS 两套产物都跑），**真机验收 5 条里第 1、2 条已过**（探针读数 + 起服登录，[安卓 APK 假服](README-安卓APK假服.md) §7） |
+| 挂机 / 外派 | ✅ B4（2026-11-01）：`30400..30405` 六条全接，新建 `src/hangup.ts` 会话状态机 —— 开场按场次一次扣满感知、`endTime = now + 场次×单场秒`、到点由 `30400` 翻 `state 1→2`、领奖按场次真 roll 掉落 + 发导师经验、召回已完成照发 + 未开始返还感知、扫荡当场结清不占会话。三条客户端硬约束（`passTime` 是除数 / 读时翻转 / `settleInfo` 只许空）见 [协议清单](README-协议清单.md) §4.5。**真机一轮待跑** |
+| 假服地基（对齐路 B） | 🚧 分支 `apk-server`（原 `gs-parity` 已并入）：36 张整表进 `src/data/tbl/` + `tbl.ts` 取数面、`econ.ts`/`skills.ts`/`weapons.ts`/`hangup.ts` 扣费发奖与升级曲线与挂机状态机、`save.ts` 原子写 + `.bak` 回退 + 结构迁移，自检 93/93；`HANDLERS` 63 条；第一档余 **B5 任务 / B6 签到**（见 [待补功能](README-待补功能.md)） |
+| 手机自服 APK | 🚧 分支 `apk-server`：nodejs-mobile（Node 18.20.4 libnode）内嵌 + 前台服务 + WebView 管理页（开关假服 / 改存档 / 看日志），非 root 绑不了 443 由 gadget 把 sockaddr 端口就地改写 443→9443；离线自检 93/93（ESM 与 CJS 两套产物都跑），**真机验收 5 条里第 1、2 条已过**（探针读数 + 起服登录，[安卓 APK 假服](README-安卓APK假服.md) §7） |
 
 剩余问题全部是**服务端协议未实现**，不是资源/客户端问题。扣费/经验/曲线这类原语此前在 `src/`
 里一个都没有（旧 41 条 handler 无一条减过库存），现在地基到位、养成已按表扣费，缺的只是把余下命令逐条接上去。
@@ -60,6 +61,7 @@
     │   ├── save.ts                    存档读写：normalizeSave 白名单 / 原子写 + .bak 回退 / 结构迁移
     │   ├── tbl.ts                     客户端配置表唯一取数面（含缺行计数）
     │   ├── econ.ts  skills.ts          经济原语（扣费/发奖/经验曲线）/ 技能升级上限
+    │   ├── hangup.ts                  挂机/外派会话状态机（只碰存档与表，不碰 GS 帧）
     │   ├── gacha.ts                   按池真实掉落链
     │   ├── gs.ts                      /AppInterface 请求解析 + ReturnPackagePush 组包
     │   ├── http.ts                    SDK/列表/版本 + AppInterface 路由
@@ -215,11 +217,11 @@
 
 | 指标 | 数字 | 阈值 |
 |---|---|---|
-| `npm run typecheck` | 5.50 s，峰值 RSS 360 MB | ≤ 8 s |
-| `npm run build`（`rm -rf dist` 后） | 6.33 s，峰值 RSS 371 MB | ≤ 15 s |
+| `npm run typecheck` | 4.94 s，峰值 RSS 367 MB | ≤ 8 s |
+| `npm run build`（`rm -rf dist` 后） | 6.67 s，峰值 RSS 377 MB | ≤ 15 s |
 | `npm run build:cjs`（`rm -rf dist-cjs` 后） | 6.39 s，峰值 RSS 371 MB，产物 14 MB | 同上（安卓那条的产物） |
-| `npm run selftest`（82 条） | 25 s，峰值 RSS 191 MB | — |
-| CJS 产物自检（`SLD_DIST=dist-cjs`，node18） | 同一套 82/82（v18.20.4） | APK 用的就是这份产物 |
+| `npm run selftest`（93 条） | 25 s，峰值 RSS 215 MB | — |
+| CJS 产物自检（`SLD_DIST=dist-cjs`，node18） | 同一套 93/93（v18.20.4） | APK 用的就是这份产物 |
 | `src/data/tbl` / `dist` 体积 | 13 MB / 15 MB | — |
 | 36 张表全 parse（25 193 行） | 103 ms | 起服增量 ≤ 400 ms |
 | `payloads.ts` 模块图加载 | 36 ms（惰性 parse，未取到的表不花钱） | — |
@@ -229,6 +231,8 @@
 所以涨幅比条数看起来小。）
 （2026-11-01 B3 后：78→82 条、24→25 s / 180→191 MB —— 通关结算这 4 条是纯内存帧构造，不额外 parse 表；
 typecheck 这次读到 5.50 s，与上表 5.99 s 同一量级，属噪声，不设阈值。）
+（2026-11-01 B4 后：82→93 条、仍 25 s / 191→215 MB。这 11 条每条都要 `useSave`+`loadSave`+`saveSave` 往返一遍
+真实存档（会话时间还挂在墙上），RSS 属预期内，不设阈值。）
 
 形状必须是 `const RAW = "<整表 JSON 单行>"` + `JSON.parse`：**类型化字面量在 4.6 MB 单文件上会让 tsc OOM**（161 s 后被杀），
 而 `JSON.parse` 形状 10.58 MB / 32 表只要 1.08 s。单文件超 4 MB 时生成器自动切列存 `{"c":[cols],"r":[[…]]}`（同批小 3.6×），由 `tbl.ts` 展开，业务代码不改。
@@ -249,6 +253,8 @@ typecheck 这次读到 5.50 s，与上表 5.99 s 同一量级，属噪声，不�
 `1207` RefineLevel · `1208` Recasting · `1209` SelectWeaponRandomInfo（+ 原有 `1203` SwitchWeapon、`1007` 列表页）·
 **战斗与结算**：`11003` BattleLogin · `11028` StartSoloBattle · `11018` BattleSettle · `11019/11031/11032` 离场 ·
 **B3 通关结算（真发经验）**：`3004` OverMainLevel · `3005` OverTrainLevel（口径见 [协议清单](README-协议清单.md) §4.4）·
+**B4 挂机/外派（真扣费 + 真结算）**：`30400` GetHangUpInfo · `30401` StartHangUp · `30402` SpeedUp ·
+`30403` ReceiveHangUpReward · `30404` Cancel · `30405` Sweep（状态机在 `src/hangup.ts`，口径见 §4.5）·
 **空包回**：`890105` BattlePass · `9300009` Rogue · `9400004` ElementRuins
 
 ### HTTP 路由

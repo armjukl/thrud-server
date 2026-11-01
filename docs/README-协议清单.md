@@ -136,6 +136,12 @@ Lua `HttpClientForLua` 先派发 `completedList` 再派发 `replenishList`，且
 | 11019 · 11031 · 11032 | BattleLeave · CloseBattleSettle · BattleLeaveFinish | ⚠️ 空 body | 离开/关闭结算，成包即可 |
 | 3004 | OverMainLevel | ✅ 真发经验 | **B3 重构**：主线结算，胜利按 `MainLevel.userExpReward` 发导师经验（`econ.addExp` 走 `PlayerGrow` 滚级）+ 写 `levels[]` 星级 + 推 `Data_Push.playerChangeExpandLvl`；关卡 id 从 `11028` 的战斗上下文取，同 `uniqueId` 不重发（§4.4） |
 | 3005 | OverTrainLevel | ✅ 新接 | 训练本结算，形状同 3004 但 `passTime` 在**字段 5**、带 `trainLevelInfo=7`（`todayAttackNum`/`attackNum` 落 `trainLevels[]`）；**只认上一场是训练战斗**（`CONST_BattleType` 2/3），否则回 `result=false` 且不落盘（§4.4） |
+| 30400 | GetHangUpInfo | ✅ | 读一条会话，但**到点要由它把 `state` 1→2 并落盘**：客户端数到 `endTime` 只会重发这一条，自己不翻状态，红点 89 也认 `state=2`（§4.5） |
+| 30401 | StartHangUp | ✅ 真扣费 | 次数按 `HangUpBattle.maxNum=10` 拦；感知按 `costItem(13, 单价×场次)` **开场一次扣满**（客户端的换购弹窗也是按总数拦的）；会话落 `hangUp`（**秒**），`endTime = now + 场次×单场秒`；未通关 / 次数越界 / 感知不足 / 已在挂机 → **拒单**（§4.5） |
+| 30402 | HangUpSpeedUp | ✅ | 只做 `endTime -= 场次×单场秒`（`startTime` 不动，客户端的"已进行时间"才连续）；**不扣加速道具**：我们的 `HangUpBattle_Xls` 没有 `jumpItemId` 那两列，六行 `modelSwitch=2` 也让按钮不出现 |
+| 30403 | ReceiveHangUpReward | ✅ 真发奖 | 只在 `state=2` 结算：按场次 roll `TrainLevel.reward` / `MainLevel.passDropId` + 发 `userExpReward`；回包 `info=1` + **空的** `settleInfo=2`；奖励走 `ShowItem_Push{comeFrom=702}`；没到点就来领 → 拒单"还差 N 秒" |
+| 30404 | HangUpCancel | ✅ 真结算+返还 | 已完成场次（`times - ceil(剩余秒/单场秒)`，与客户端同一个式子）照样发奖，未开始的按 `单价×剩余` 返还感知且不超上限 —— 客户端 8007 确认框就是这个口径 |
+| 30405 | HangUpSweep | ✅ 真扣发 | 一次结清 n 场、**不占会话**（挂机中扫荡 → 拒单）；`HangUpSweep_S2C` **只有** `settleInfo=1`（没有 info），客户端 handler 也不读 info，奖励仍靠 `ShowItem_Push(702)` 在横幅 3 秒后弹出 |
 | 1001 | UpgradeLeader | ✅ 真扣费 | **B1 重构**：读 C2S `itemInfo=3`（`ProtoHashInt2Int`）→ `Items_Xls.useParam` 折成经验 → `while(lv<本突上限 && exp>=本级需求)` 连升；回空包 + 推 `Data_Push.leaderAttrChanged`(+`changePart`)。材料不足/满级 → **拒单**（§4.1） |
 | 1005 | UpgradeLeaderBreach | ✅ 真扣费 | 突破：付 `LeaderBreak[leaderId, breakNum==本突].consumeId`，`breach+1`；S2C 是**空 message**，失败只能拒单 |
 | 1002 | UpgradeLeaderStar | ✅ 真扣费 | 大阶（星）：付**当前**档 `LeaderStar[lid][star].consumeID`，前提是小阶已满（`star+1` 档无 `slv+1` 行）→ `star+1, starLevel=0`。`star` **从 0 起**（`star*3+starLevel` 是属性节点索引） |
@@ -247,7 +253,10 @@ weaponRandomSkill[i]                               →  WeaponRandom[pool].skill
   `MAIN_LEVEL[levelId] → {levelInstanceId, levelStageId}`，训练走 `TrainLevel.newLevelId / stageLevel`。
   查无此关时**宁回 `result=false`、不带 `trainLevelInfo`**：客户端
   `OverTrainLevelHandler` 是 `if msg.result then PassTrainLevel(msg.trainLevelInfo)`，
-  回一个 `id=0` 的 info 会让它去查表并崩在面板上。
+  回一个 `id=0` 的 info 会让它去查表并崩在面板上。**3004 同病**（B4 才补上）：
+  `OverMainLevelHandler` 见 `msg.result` 为真就**无条件** index `msg.mainLevelInfo.id`，
+  所以 `result` 与 `mainLevelInfo` 必须同进同出 —— 假服重启后 `lastBattle` 清零、这一场认不出关卡时，
+  连 `result` 也要回假。
 - **③ 同一场结算会来好几次。** 客户端 `ClockRequestMsg` 约每 22 s 轮询一次结算，抓到过的真帧序列里
   同一场先 `result=0`（还没打完/中途退出）后 `result=2`；`BattleResult` 是
   `0=无 / 1=平 / 2=胜 / 3=负`，**只有 2 算通关**。幂等靠 `uniqueId`：`BattleOver` 的 `uniqueId`
@@ -271,6 +280,51 @@ weaponRandomSkill[i]                               →  WeaponRandom[pool].skill
 **B3 有意没做的事**（做之前先想清楚代价）：进本**不扣体力**（`MainLevel.powerCost` /
 `TrainLevel.strengthCost` 读了但没扣，扣了就回不了退不掉的账）、不发 `leaderExpReward`
 （武将经验是客户端本地结算）、不给首通/三星奖励、任务进度 `bumpTask` 留到 B5。
+
+### 4.5 挂机的三条地雷与"单场时长"口径（2026-11-01，B4）
+
+挂机六条的状态机在 [`src/hangup.ts`](../src/hangup.ts)（只碰存档与表，不碰 GS 帧），
+GS 帧的拼法留在 `payloads.ts`。口径全从客户端 Lua 反推（`HangUpBattleDataMgr` / `HangUpBattleMsg` /
+`UIHangUpBattleCtrl`），三条最要命的：
+
+- **① `passTime` 是除数，不是展示值。** 单场时长 = `GetPassedMinTime(levelId, type)`，读的是
+  **玩家自己那条通关记录**的 `passTime` —— 也就是我们登录大包里 `MainLevelInfo.passTime=10` /
+  `TrainLevelInfo.passTime=8`。客户端 `GetCurRemainHangUpNum = math.ceil(剩余秒 / 单场秒)`，
+  给 0 就是 `ceil(x/0) = inf`，进度条、剩余场次、召回文案全废。原先 `mainLevelInfoBody` 恒发 0，
+  所以主线挂机根本不可能成立。B4 的修法：`levels` 从 `id → 星级数组` 升成
+  `SaveMainLevel{ 通关记录…, stars }`（真耗时由 3004 的 C2S `passTime=6` 写进去），
+  读档统一过 `safePassTime()`（取整后不足 1 秒就兜 30）。于是**服务端永远发不出 0 的单场时长**，
+  挂机侧不必再防除零 —— 只有"会话还挂着但记录被改档删了"这一种情况还需要防（`speedUp` 拒、
+  `cancel` 按全部场次结算，不能凭空吞奖励）。
+- **② `state` 靠读请求翻转。** `HangUpBattleState` 是 `0=未挂机或已领 / 1=挂机中 / 2=完成未领`；
+  `state=1` 时客户端跑一个 1 秒 tick，**到 `endTime` 只是重发 `GetHangUpInfo`**，不自己改状态。
+  所以 30400 除了回 `info` 还要 `refreshState()` + 落盘（领取、召回也各补一次，防"到点却没读过"）。
+  红点 89 认的也是 `state=2`。
+- **③ `settleInfo` 只许给空消息。** `HangUpBattleDataMgr.UpdateLevelInfo(settle)` 只在
+  `settleInfo.type` 有值时动作（`type=2` → `PassTrainLevel(trainLevelInfo)`，`type=1` →
+  `LevelDataMgr.UpdateLevelInfo(mainLevelInfo)`），这两条都会拿 id 去查关卡表，而挂机**不产生"新通关一关"**
+  —— 带 type 就是送崩。`HangUpSettle` 全字段 optional，所以 `pb.bfield(2, Buffer.alloc(0))`
+  既满足 required 又没有 type。
+
+奖励只有一条通道能看见：`ShowItem_Push{ comeFrom = ActionEnum.HangUpGet = 702 }` → 事件
+`HangUp_HangUpRewardsPush(16004)` → 挂机自己的发奖窗；`700/701/703/704` 在 Lua 里**没有**挂机分支，
+发过去只会走通用"获得物品"窗。`ShowItem_Push` 在客户端的 `Ignore_Replenish_MsgID` 里，
+所以必须走 `mainInCompleted` + `extra`（同 §3.1 第 1 条），顶栏数值则靠同包的 `Data_Push{changeStrength=3, changeExp=…}`。
+
+失败一律 **`deny`**（§4.1），不走 `errorCode`：客户端的重试循环只认
+`errorCode == -1 && msgId == GetHangUpInfo` 这一种组合，通用错误另有 `ErrorMsg_S2C` 那条通道
+（`errorCode<=50000` 打断 + 确认框，否则 `OpenNetWorkNotice`），而我们从不写那条 ——
+把 471001/471017 这类码发出去，等于把请求推进一条没人监听的分支。
+
+**入口不需要补表**：`HangUpBattle_Xls` 六行的 `functionId` 294/295/296/297/298/4610，
+经 `OpenFuction_Xls` 解出的解锁条件是 `6101110 / 6102103 / 6102106 / 0 / …`，这些 id 全在
+`COMMON_CONDITION_IDS` 里，`GetOpenFunctionData(10102)` 一次全下发 → 外派入口天然开着。
+`unlockCondition==1` 的"必须已通关"由服务端 `recordOf()` 拦（客户端也会自己拦，notice 400006）。
+时间基准同样不用对时：`HeartManager.GetServerTime() = os.time() + deltaTime`，APK 与客户端在同一台机器上，
+`deltaTime` 恒 0，直接用本地秒。
+
+**B4 有意没做的事**：不校验"今日进本次数用完"（`todayAttackNum` 只累加）、不发 `leaderExpReward`、
+不给首通/三星奖励、扫荡不查扫荡券、加速不扣道具。
 
 ### 怎么加一个协议
 

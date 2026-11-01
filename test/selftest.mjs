@@ -944,7 +944,8 @@ const saveFixture = () => ({
     last: { skill: [], key: [102], val: [77], poolIdx: [3], attrIdx: [2], scope: 0 },
   }],
   items: { '1020004': 3 }, money: { '1': 9 }, cloths: [30001], wskin: [40001],
-  levels: { '101101': [1, 2, 3] },
+  // B4 起主线关记录也是完整记录(挂机要读 passTime 当单场时长), 不再是"id -> 星级数组"
+  levels: { '101101': { id: 101101, passTime: 42, todayAttackNum: 3, attackNum: 5, lastAttackTime: 1700000000000, stars: [1, 2, 3] } },
   trainLevels: { '101101': { id: 101101, passTime: 45, todayAttackNum: 2, attackNum: 7, lastAttackTime: 1700000000000 } },
   gacha: { '3116': 20 },
   signin: { month: 20016, times: 5, day: 4, lastTime: 1700000000000 },
@@ -967,6 +968,10 @@ await check('save: normalizeSave 全字段往返不丢 (漏登记即红灯)', as
   assert.deepEqual(got, fx, 'normalizeSave 丢字段或改值');
   // 落盘 -> 读回的真实链路就是 JSON 文本, 再过一遍必须幂等.
   assert.deepEqual(normalizeSave(JSON.parse(JSON.stringify(got))), fx, '经 JSON 文本往返不幂等');
+  // 老档的 levels 是 "id -> 星级数组", 升级成记录时必须补一个能用的单场时长(30), 星级不能丢
+  const legacy = normalizeSave({ levels: { '101101': [3] } });
+  assert.equal(legacy.levels['101101'].passTime, 30, '老档主线关该兜 30 秒单场时长');
+  assert.deepEqual(legacy.levels['101101'].stars, [3], '老档的星级不能因为换形状就丢了');
 });
 
 // 老档(只有 A4 之前的那些键, trainLevels 还是 number[])必须被 loadSave 升上来, 且第二次读不再改.
@@ -1285,7 +1290,8 @@ await check('proto: 注册表完整 (基线 handler 不掉 / 第一档进度对�
   // TIER1_DONE 每批做完往里加; "未注册数" 必须等于"声明还没做的数量" —— 偷偷接了不登记就红灯
   const TIER1_DONE = [1002, 1003, 1004, 1005, 1008, 1010, 1011, 1016,   // B1 养成(1001 重构不在此列)
     1201, 1202, 1204, 1205, 1207, 1208, 1209,                            // B2 武装
-    3005];                                                                // B3 通关
+    3005,                                                                 // B3 通关
+    30400, 30401, 30402, 30403, 30404, 30405];                          // B4 挂机
   const stillMissing = TIER1_NEW.filter((id) => !registered.has(id)).sort((a, b) => a - b);
   const declared = TIER1_NEW.filter((id) => !TIER1_DONE.includes(id)).sort((a, b) => a - b);
   assert.deepEqual(stillMissing, declared,
@@ -2238,7 +2244,9 @@ await check('B3 3004 OverMainLevel: 胜利按表发经验并推 playerChangeExpa
     const pl = GProto.decodeFields(fld(GProto.decodeFields(res.pushes.find(([h]) => h === DPUSH)[1]), 1).value);
     assert.deepEqual([num1(pl, 1), num1(pl, 2)], [1, 10], '顶栏经验条只认 Data_Push.playerChangeExpandLvl');
     assert.equal(loadSave().player.exp, 10, '10 经验 < PlayerGrow 1 级要的 20 -> 只进账不升级');
-    assert.deepEqual(loadSave().levels['101101'], [1, 2, 3], '星级要落盘, 否则重登又变没打');
+    const lv = loadSave().levels['101101'];
+    assert.deepEqual(lv.stars, [1, 2, 3], '星级要落盘, 否则重登又变没打');
+    assert.equal(lv.passTime, 42, '主线的 passTime 要落盘: 挂机拿它当单场时长(0 会让客户端除零)');
     // 客户端拿 ClockRequestMsg 轮询同一场结算: uniqueId 变了会被当新一场重铺面板, 经验还会发第二遍
     const again = run(3004, req);
     const againDec = GProto.decodeFields(again.body);
@@ -2318,6 +2326,243 @@ await check('B3 3005: 上一场是主线战斗 -> 训练结算不认关卡(两�
     assert.equal(loadSave().trainLevels['101101'], undefined, '主线的 101101 不许被写成训练记录');
     assert.equal(loadSave().levels['101101'], undefined, '训练结算也不许写主线进度');
   } finally { restore(); }
+});
+
+// 假服重启后 lastBattle 清零(内存态)，此时客户端把这一场判成胜利并来结算：
+// 客户端 OverMainLevelHandler 见 msg.result 为真就**无条件** index msg.mainLevelInfo.id —— 认不出关卡
+// 就必须连 result 一起回假，否则会崩在结算面板上（与 3005 那条同口径）。
+await check('B3 3004: 认不出关卡(重启后 lastBattle 清零) -> result 与 mainLevelInfo 同进同出', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const run = (id, req) => HANDLERS[id]({ msgId: id, packetUUid: 1, proto: req, headerHex: '' });
+  const restore = useSave(battleSave());
+  try {
+    enterBattle(run, 0, 1);                 // 上下文里关卡 id = 0, 等价于"重启后没记下这一场"
+    const dec = GProto.decodeFields(run(3004, settleReq(2, [GProto.vfield(2, 3), GProto.bfield(3, GProto.vfield(5, 20))])).body);
+    ps.assertRequired('B3 3004 无上下文回包', 'OverMainLevel_S2C', dec, { pb: GProto, maxDepth: 3 });
+    assert.equal(num1(dec, 3), 0, '给不出 mainLevelInfo 就不许回 result=1');
+    assert.ok(!fld(dec, 8), '不许回 id=0 的 mainLevelInfo 让客户端去查表');
+    assert.equal(loadSave().levels['0'], undefined, '认不出关卡不许写档');
+  } finally { restore(); }
+});
+
+// ---------------------------------------------------------------- B4 挂机/外派 (30400-30405)// 会话时间挂在真实时钟上, 用例的 startTime/endTime 一律按"现在"推出来写, 不写死秒数。
+// 数值口径(实测表值): TrainLevel 100101 单场 30 秒(取通关记录 passTime)、每场 25 感知、
+// 每场掉 590001 -> Drop -> 物品 10 ×28500、每场 25 导师经验。
+// 等级取 50 而不是 1: lv1 只要 20 经验就升级, 而升级会附带一笔 addPower 感知, 那样"扣了多少体力"
+// 就断言不准了; lv50 升一级要 700 经验, 用例最多发 100, 滚不到级。
+const HU_LID = 100101;
+const HU_PER = 30;
+const HU_COST = 25;
+const HU_DROP = 28500;
+const HU_LV = 50;
+const nowSecOf = () => Math.floor(Date.now() / 1000);
+const hangSave = (mut) => {
+  const s = JSON.parse(fs.readFileSync(SAVE_FILE, 'utf8'));
+  Object.assign(s.player, { level: HU_LV, exp: 0, maxExp: 700, strength: 120, maxStrength: 200, strengthRealTime: nowSecOf() });
+  s.money = { ...s.money, '10': 0 };
+  s.items = {}; // 断言"拒单不许发奖励"要看干净的数量, 别留别的用例的余货
+  s.hangUp = { type: 0, levelId: 0, times: 0, startTime: 0, endTime: 0, state: 0 };
+  s.trainLevels[String(HU_LID)] = { id: HU_LID, passTime: HU_PER, todayAttackNum: 1, attackNum: 1, lastAttackTime: 1700000000000 };
+  if (mut) mut(s);
+  return s;
+};
+/** 起一个会话: startAgo 秒前开始, 计划 times 场, 单场 HU_PER 秒. 返回的档可以读 hangUp 做时间断言. */
+const sessionSave = ({ state, startAgo, times = 4, strength = 20 }) => hangSave((s) => {
+  const now = nowSecOf();
+  s.player.strength = strength;
+  s.hangUp = { type: 2, levelId: HU_LID, times, startTime: now - startAgo, endTime: now - startAgo + times * HU_PER, state };
+});
+const huReq = (type, levelId, times) =>
+  GProto.concat(GProto.vfield(1, type), GProto.vfield(2, levelId), GProto.vfield(3, times));
+const infoOf = (dec) => GProto.decodeFields(fld(dec, 1).value);
+const rewardOfPush = (res) => {
+  const p = (res.extra ?? []).concat(res.pushes ?? []).find(([h]) => h === 900009);
+  assert.ok(p, '奖励必须有 ShowItem_Push(900009), 客户端只认这一条弹窗');
+  const dec = GProto.decodeFields(p[1]);
+  assert.equal(num1(dec, 1), 702, 'comeFrom 必须是 ActionEnum.HangUpGet=702: 其它挂机 Action 在 Lua 里没有分支');
+  return GProto.decodeFields(fld(dec, 2).value).map((r) => GProto.decodeFields(r.value));
+}
+
+await checkHandler('B4 30401 StartHangUp: 一次扣满全场感知, 会话按记录的 passTime 排时间', 30401, {
+  save: hangSave(),
+  req: huReq(2, HU_LID, 2),
+  push: [[DPUSH, 'Data_Push']],
+  fields: (dec, { res }) => {
+    const info = infoOf(dec);
+    assert.equal(num1(info, 1), 2, 'info.type 回显 CONST_BattleType=2(训练本): 客户端拿它查 GetPassedMinTime');
+    assert.equal(num1(info, 2), HU_LID, 'info.levelId 回显关卡表 id');
+    assert.equal(num1(info, 3), 2, 'info.times 回显计划场次');
+    assert.equal(num1(info, 6), 1, 'state=1 挂机中');
+    assert.equal(num1(info, 4), Math.floor(Date.now() / 1000), 'startTime 就是服务端此刻(HeartManager 的服务器时间=本地秒, 客户端拿它算已进行时间)');
+    assert.equal(num1(info, 5) - num1(info, 4), 2 * HU_PER, 'endTime-startTime 必须等于 场次×单场秒数(客户端按它算进度)');
+    const dp = GProto.decodeFields(res.pushes.find(([h]) => h === DPUSH)[1]);
+    assert.equal(num1(GProto.decodeFields(fld(dp, 3).value), 1), 120 - 2 * HU_COST, '扣了感知要推 changeStrength, 顶栏才动');
+  },
+  after: (s) => {
+    assert.equal(s.player.strength, 120 - 2 * HU_COST, '挂机的体力按计划场次一次性扣(客户端也是按总数拦的)');
+    assert.equal(s.hangUp.state, 1, '会话要落盘: 重启后 GetHangUpInfo 还得能读出来');
+  },
+});
+
+await check('B4 30401 五种不许开始: 没通关 / 次数超上限 / 感知不足 / 已在挂机 / 类型不是挂机 -> 拒单且不动档', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const run = (req, save) => {
+    const restore = useSave(save);
+    try {
+      const res = HANDLERS[30401]({ msgId: 30401, packetUUid: 1, proto: req, headerHex: '' });
+      assert.ok(res && res.deny, `期望拒单, 实际回了 body=${(res.body ?? res).length ?? 0}B: ${JSON.stringify(res)}`);
+      assert.equal((res.pushes ?? []).length + (res.extra ?? []).length, 0, '拒单不许带推送(推送会让客户端刷新/弹窗)');
+      const s = loadSave();
+      assert.equal(s.hangUp.state, save.hangUp.state, '拒单不许动会话(在挂机的那条要还是 1)');
+      assert.equal(s.player.strength, save.player.strength, '拒单不许扣体力');
+      assert.equal(s.money['10'], 0, '拒单不许发奖励');
+      return res.deny;
+    } finally { restore(); }
+  };
+  const cases = [
+    [huReq(2, HU_LID, 1), hangSave((s) => delete s.trainLevels[String(HU_LID)]), /还没通关/, '未通关要按 471001 拒'],
+    [huReq(2, HU_LID, 11), hangSave(), /1\.\.10/, '次数要按 HangUpBattle.maxNum 拦'],
+    [huReq(2, HU_LID, 5), hangSave(), /感知不足/, '5 场要 125 感知, 只有 120 -> 该拒'],
+    [huReq(2, HU_LID, 2), sessionSave({ state: 1, startAgo: 10 }), /已有挂机/, '挂机中不许再开一场'],
+    [huReq(5, HU_LID, 1), hangSave(), /不是主线\(1\)/, '战斗类型 5(塔)不是挂机类型'],
+    [huReq(2, 999999, 1), hangSave(), /表里没/, '不存在的关卡 id 要拦住(客户端不会发, 但假服不能崩)'],
+  ];
+  for (const [req, save, re, why] of cases) assert.match(run(req, save), re, `${why}`);
+});
+
+// 客户端拿 passTime 当除数, 所以"假服永远不会把 0 秒的单场时长发出去"是挂机成立的前提。
+// 读档时 safePassTime 已经把 0/负/小数兜成 30, 于是这条只能从存档层断言, 不该由 handler 再防一遍。
+await check('B4 兜底: 存档里 passTime 为 0 或畸形的记录, 读档就变成 30 秒(客户端才不会除零)', async () => {
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const restore = useSave(hangSave((s) => {
+    s.trainLevels['100102'] = { id: 100102, passTime: 0, todayAttackNum: 1, attackNum: 1, lastAttackTime: 0 };
+    s.trainLevels['100103'] = { id: 100103, passTime: -5, todayAttackNum: 1, attackNum: 1, lastAttackTime: 0 };
+    s.trainLevels['100104'] = { id: 100104, passTime: 0.4, todayAttackNum: 1, attackNum: 1, lastAttackTime: 0 };
+    s.levels['101102'] = { id: 101102, passTime: 0, todayAttackNum: 1, attackNum: 1, lastAttackTime: 0, stars: [1] };
+  }));
+  try {
+    const s = loadSave();
+    for (const k of ['100102', '100103', '100104']) assert.equal(s.trainLevels[k].passTime, 30, `训练本 ${k} 的耗时该兜到 30`);
+    assert.equal(s.levels['101102'].passTime, 30, '主线关同样要兜住');
+    assert.deepEqual(s.levels['101102'].stars, [1], '兜耗时不许顺手吃掉星级');
+  } finally { restore(); }
+});
+
+await check('B4 30400 GetHangUpInfo: 到点自己把 state 1->2 并落盘(客户端只会重发这一条)', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const read = (save) => {
+    const restore = useSave(save);
+    try {
+      const res = HANDLERS[30400]({ msgId: 30400, packetUUid: 1, proto: Buffer.alloc(0), headerHex: '' });
+      return { dec: GProto.decodeFields(res.body ?? res), after: loadSave() };
+    } finally { restore(); }
+  };
+  const due = read(sessionSave({ state: 1, startAgo: 200, times: 4 })); // endTime 在 80 秒前就到点
+  ps.assertRequired('B4 30400 到点回包', 'GetHangUpInfo_S2C', due.dec, { pb: GProto, maxDepth: 3 });
+  assert.equal(num1(infoOf(due.dec), 6), 2, '到点了必须回 state=2(完成未领), 红点 89 也靠它');
+  assert.equal(due.after.hangUp.state, 2, '翻转要落盘, 不然每次读都重算一遍');
+  const early = read(sessionSave({ state: 1, startAgo: 30, times: 4 })); // 还剩 90 秒
+  assert.equal(num1(infoOf(early.dec), 6), 1, '没到点不许偷翻状态');
+  assert.equal(early.after.hangUp.state, 1, '没到点不许改档');
+  const idle = read(hangSave());
+  assert.equal(num1(infoOf(idle.dec), 6), 0, '新号读挂机 -> state=0, 客户端据此走"未挂机"分支');
+});
+
+await checkHandler('B4 30403 ReceiveHangUpReward: 按场真发掉落+经验, 奖励走 ShowItem_Push(702)', 30403, {
+  save: sessionSave({ state: 2, startAgo: 200, times: 4 }),
+  fields: (dec, { res }) => {
+    assert.equal(num1(infoOf(dec), 6), 0, '领完清会话: state=0');
+    const settle = fld(dec, 2);
+    assert.ok(settle, 'settleInfo 是 required, 缺席客户端 pbNew.decode 就报错');
+    assert.equal(GProto.decodeFields(settle.value).length, 0, 'settleInfo 带 type 客户端就会去查关卡表, 挂机不产生新通关 -> 只许空');
+    const items = rewardOfPush(res);
+    assert.equal(items.length, 1, '训练本每场只掉一种(物品 10)');
+    assert.equal(num1(items[0], 1), 10, '掉的物品 id');
+    assert.equal(num1(items[0], 3), 4 * HU_DROP, '4 场要按 4 次 roll 累加');
+  },
+  after: (s) => {
+    assert.equal(s.money['10'], 4 * HU_DROP, '奖励要真进账');
+    assert.equal(s.trainLevels[String(HU_LID)].attackNum, 1 + 4, '挂机场次计入进本次数');
+    assert.ok(s.player.exp > 0 || s.player.level > 1, '4 场 ×25 导师经验要真发');
+    assert.equal(s.hangUp.times, 0, '会话清了');
+  },
+});
+
+await checkHandler('B4 30403: 还没挂完就来领 -> 拒单, 不发奖励', 30403, {
+  save: sessionSave({ state: 1, startAgo: 30, times: 4 }),
+  deny: /还差/,
+  after: (s) => {
+    assert.equal(s.hangUp.state, 1, '拒单不许动会话');
+    assert.equal(s.money['10'], 0, '拒单不许发奖励');
+  },
+});
+
+await checkHandler('B4 30404 HangUpCancel: 已完成场次照样结算, 未开始的场次返还感知', 30404, {
+  save: sessionSave({ state: 1, startAgo: 70, times: 4 }),
+  fields: (dec, { res }) => {
+    assert.equal(num1(infoOf(dec), 6), 0, '召回后会话清掉');
+    assert.equal(GProto.decodeFields(fld(dec, 2).value).length, 0, 'settleInfo 只许空');
+    assert.equal(num1(rewardOfPush(res)[0], 3), 2 * HU_DROP, '70 秒/单场 30 秒 -> ceil 剩 2 场, 完成的 2 场要发');
+  },
+  after: (s) => {
+    assert.equal(s.money['10'], 2 * HU_DROP, '已完成场次的奖励不能凭空丢');
+    assert.equal(s.player.strength, 20 + 2 * HU_COST, '未开始的 2 场体力要返还(客户端确认框就是这个口径)');
+    assert.equal(s.trainLevels[String(HU_LID)].attackNum, 1 + 2, '只计已完成的场次');
+  },
+});
+
+await checkHandler('B4 30405 HangUpSweep: 当场结清 n 场, 回包只有 settleInfo(没有 info)', 30405, {
+  save: hangSave(),
+  req: huReq(2, HU_LID, 3),
+  fields: (dec, { res }) => {
+    assert.equal(dec.length, 1, 'HangUpSweep_S2C 只有 settleInfo=1, 多回一个字段就是编的');
+    assert.equal(GProto.decodeFields(fld(dec, 1).value).length, 0, 'settleInfo 只许空');
+    assert.equal(num1(rewardOfPush(res)[0], 3), 3 * HU_DROP, '扫 3 场发 3 场');
+  },
+  after: (s) => {
+    assert.equal(s.player.strength, 120 - 3 * HU_COST, '扫荡按场次扣体力');
+    assert.equal(s.hangUp.state, 0, '扫荡不占挂机会话');
+    assert.equal(s.money['10'], 3 * HU_DROP, '扫荡的奖励真进账');
+  },
+});
+
+const huSpeed = sessionSave({ state: 1, startAgo: 30, times: 4 });
+await checkHandler('B4 30402 HangUpSpeedUp: endTime 前移 场次×单场, 不扣道具(表里没有加速道具)', 30402, {
+  save: huSpeed,
+  req: GProto.vfield(1, 2),
+  fields: (dec) => {
+    const info = infoOf(dec);
+    assert.equal(num1(info, 5), huSpeed.hangUp.endTime - 2 * HU_PER, '加速 2 场 = 剩余时间少 2×单场秒');
+    assert.equal(num1(info, 4), huSpeed.hangUp.startTime, 'startTime 不动, 客户端的已进行时间才连续');
+    assert.equal(num1(info, 6), 1, '还剩 30 秒, 不许偷翻成完成');
+  },
+  after: (s) => assert.equal(s.hangUp.endTime, huSpeed.hangUp.endTime - 2 * HU_PER, '加速要落盘'),
+});
+
+await check('B4 30402/30404/30405 的越界: 不在挂机中不许加速 / 没挂机不许召回 / 挂机中不许扫荡', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const run = (id, req, save) => {
+    const restore = useSave(save);
+    try { return { res: HANDLERS[id]({ msgId: id, packetUUid: 1, proto: req, headerHex: '' }), after: loadSave() }; }
+    finally { restore(); }
+  };
+  assert.match(run(30402, GProto.vfield(1, 1), hangSave()).res.deny ?? '', /不在挂机中/);
+  assert.match(run(30404, Buffer.alloc(0), hangSave()).res.deny ?? '', /没在挂机/);
+  assert.match(run(30405, huReq(2, HU_LID, 1), sessionSave({ state: 1, startAgo: 10 })).res.deny ?? '', /挂机进行中/);
+
+  // 会话还挂着, 但通关记录被改档改掉了 -> 单场时长无从计算: 加速该拒, 召回该全结(那几场是开场时就付过钱的)
+  const gone = sessionSave({ state: 1, startAgo: 30, times: 4 });
+  delete gone.trainLevels[String(HU_LID)];
+  assert.match(run(30402, GProto.vfield(1, 1), gone).res.deny ?? '', /算不出单场时长/, '记录没了不许瞎改 endTime');
+  const cancel = run(30404, Buffer.alloc(0), gone);
+  assert.ok(!cancel.res.deny, `召回不该被记录缺失卡住: ${cancel.res.deny}`);
+  assert.equal(num1(rewardOfPush(cancel.res)[0], 3), 4 * HU_DROP, '记录没了按全部场次结算, 不能凭空吞奖励');
+  assert.equal(cancel.after.player.strength, 20, '计划场次都算完成了, 没有可返还的');
+  assert.equal(cancel.after.hangUp.state, 0, '会话清掉');
 });
 
 // ---------------------------------------------------------------- 5. 工具链
