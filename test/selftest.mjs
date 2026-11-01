@@ -41,7 +41,9 @@ const { encodeSegment, decodePacket, CMD, KcpSession } = await import(`../${DIST
 const { Framer, encode, CANDIDATE_RULES } = await import(`../${DIST}/framing.js`);
 const { createGateway, on } = await import(`../${DIST}/gateway.js`);
 const { createHttpServer } = await import(`../${DIST}/http.js`);
-const { config } = await import(`../${DIST}/config.js`);
+const { config, DATA: DATA_DIR } = await import(`../${DIST}/config.js`);
+// handler 会真写档 -> 备份/还原用的现场路径(admin 那组 check 也要, 故提到最早)
+const SAVE_FILE = config.paths.save;
 
 const exec = promisify(execFile);
 const results = [];
@@ -230,6 +232,150 @@ await check('offline: start/stop 三轮 —— 真停真起、兜底记录不翻
     cli.close();
     if (hrBackup) fs.writeFileSync(config.paths.headerRule, hrBackup);
     else fs.rmSync(config.paths.headerRule, { force: true });
+  }
+});
+
+// ---------------------------------------------------------------- 3c. 管理面 (admin.ts)
+// 手机上的开关/改档/看日志全走这里, 判据只能是 HTTP 回包: 状态对不对、启停有没有真把端口
+// 放开、写档被拒时盘上一个字节都不能动。
+// 每条 check 一个端口: admin.close() 会 closeAllConnections(), 共用端口时 undici 池里的
+// keep-alive 套接字会变成"对端已 reset 但客户端不知道"的僵尸, 下一条 check 第一跳就 fetch failed。
+const adminClient = (port) => {
+  const base = `http://127.0.0.1:${port}`;
+  const reqJ = (p, method, body) => fetch(base + p, {
+    method,
+    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : (typeof body === 'string' ? body : JSON.stringify(body)),
+  }).then(async (r) => ({ code: r.status, body: await r.json().catch(() => null) }));
+  return {
+    base,
+    reqJ,
+    getJ: (p) => reqJ(p, 'GET'),
+    postJ: (p) => reqJ(p, 'POST'),
+    patchJ: (obj) => reqJ('/api/save', 'PATCH', obj),
+    putSave: (text) => reqJ('/api/save', 'PUT', text),
+  };
+};
+
+await check('admin: 状态/开关/日志尾读/页面 一条链跑通', async () => {
+  const { createOfflineServer } = await import(`../${DIST}/offline.js`);
+  const { createAdminServer } = await import(`../${DIST}/admin.js`);
+  const A = adminClient(19328);
+  const off = createOfflineServer();
+  const admin = createAdminServer(off, { host: '127.0.0.1', port: 19328 });
+  try {
+    await admin.ready;
+    const page = await (await fetch(A.base + '/')).text();
+    assert.ok(page.includes('<textarea id="saveJson"'), '页面得是完整 HTML, 不是半截模板');
+    assert.ok(page.trim().endsWith('</html>') && page.length > 4000, '单页要自带样式与脚本, 不能靠外部文件');
+
+    const s0 = await A.getJ('/api/status');
+    assert.equal(s0.code, 200);
+    assert.equal(s0.body.running, false, '刚建好没 start, status 要如实报停');
+    assert.equal(s0.body.gateway.port, config.gateway.port, 'status 里的端口就是假服本体的端口');
+    assert.ok(s0.body.node.startsWith('v'), 'node 版本给管理页显示');
+
+    assert.equal((await A.postJ('/api/start')).body.running, true, 'start 后 status.running 要翻上来');
+    const started = await A.getJ('/api/status');
+    assert.equal(started.body.running, true);
+    assert.equal((await A.postJ('/api/stop')).body.running, false, 'stop 后 running 要翻下去');
+
+    const t = await A.getJ('/api/logs?tail=5');
+    assert.equal(t.code, 200);
+    assert.ok(t.body.text.includes('admin'), '启停本身就写进 server.log, 尾读要看得见');
+    assert.ok(typeof t.body.nextOffset === 'number' && t.body.nextOffset > 0, '尾读要带 nextOffset 给 2s 轮询');
+    const inc = await A.getJ('/api/logs?offset=' + t.body.nextOffset);
+    assert.equal(inc.body.text, '', '从 nextOffset 增量读, 不该重吐已给过的内容');
+    await A.reqJ('/api/loglevel', 'POST', { level: 'debug' });
+    assert.equal((await A.reqJ('/api/loglevel', 'POST', { level: 'nope' })).code, 400, '级别只能四选一');
+    await A.reqJ('/api/loglevel', 'POST', { level: 'info' });
+    const items = await A.getJ('/api/items?kind=money');
+    assert.equal(items.code, 200);
+    assert.ok(items.body.length >= 6 && items.body.every((i) => i.name), '六种货币都要有中文名, 界面才能选');
+    assert.equal((await fetch(A.base + '/api/nope')).status, 404, '未知管理端点别装成功');
+  } finally {
+    await admin.close();
+  }
+});
+
+await check('admin: 写档 —— 合法 200 立即可读, 四种非法 400 且盘上逐字节不动', async () => {
+  const { createOfflineServer } = await import(`../${DIST}/offline.js`);
+  const { createAdminServer } = await import(`../${DIST}/admin.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const before = fs.readFileSync(SAVE_FILE);
+  const A = adminClient(19329);
+  const off = createOfflineServer();
+  const admin = createAdminServer(off, { host: '127.0.0.1', port: 19329 });
+  const unchanged = () => assert.equal(fs.readFileSync(SAVE_FILE).equals(before), true, '被拒的请求不许把盘写脏');
+  try {
+    await admin.ready;
+    const doc = (await A.getJ('/api/save')).body;
+    const keys = Object.keys(doc).sort();
+    assert.ok(keys.includes('characters') && keys.includes('money') && keys.length >= 18, `GET /api/save 要给出完整 ${keys.length} 键档`);
+
+    const legal = JSON.parse(before.toString('utf8'));
+    // 先把该拒的试干净: 每一步都对照 before, 证明确实一个字节没动
+    const noChars = { ...legal };
+    delete noChars.characters;
+    assert.equal((await A.putSave(JSON.stringify(noChars))).code, 400, 'PUT 是整档替换, 缺 characters 必须拒');
+    await unchanged();
+
+    assert.equal((await A.patchJ({ characters: null })).code, 400, 'characters:null 必须拒 —— normalizeSave 会把它当"没给"静默重置成初始号');
+    await unchanged();
+
+    const badItem = { ...legal, items: { ...(legal.items || {}), '99999999': 5 } };
+    assert.equal((await A.patchJ(badItem)).code, 400, '客户端不认识的道具 id 必须拒');
+    await unchanged();
+
+    assert.equal((await A.putSave('{"player":{')).code, 400, 'JSON 截断要 400 而不是 500');
+    await unchanged();
+
+    assert.equal((await A.patchJ({ ...legal, nopeBlock: 1 })).code, 400, '多出来的顶层键也要拒, 否则手滑打错键名等于没改');
+    await unchanged();
+
+    assert.equal((await A.patchJ({ money: '不是对象' })).code, 400, '顶层键类型不对也得拒');
+    await unchanged();
+
+    legal.money['10'] = Number(legal.money['10'] || 0) + 7;
+    const okRes = await A.patchJ(legal);
+    assert.equal(okRes.code, 200, `合法档该 200, 实际 ${okRes.code}: ${okRes.body && okRes.body.error}`);
+    assert.equal(loadSave().money['10'], legal.money['10'], 'loadSave 每请求重读盘 -> 不重启就生效');
+    assert.ok(/save\.pre-admin\..*\.json$/.test(okRes.body.backup), '写前必须先留一份现状副本');
+    assert.ok(fs.existsSync(path.join(config.paths.logs, path.basename(okRes.body.backup))), '副本要真在 logs 里');
+    assert.ok(!fs.readFileSync(SAVE_FILE).equals(before), '合法写盘后档就该变了');
+
+    // PATCH 少键 = "不改它"(货币快捷改档就靠这条), 所以不该拒 —— 放在所有负例之后, 免得污染 unchanged() 的对照
+    assert.equal((await A.patchJ({ money: legal.money })).code, 200, 'PATCH 只给 money 是合法的部分更新');
+
+    assert.equal((await A.putSave(JSON.stringify(legal))).code, 200, 'PUT 给全档该收');
+  } finally {
+    await admin.close();
+    fs.writeFileSync(SAVE_FILE, before);
+  }
+});
+
+await check('admin: 绑到 0.0.0.0 就必须有令牌, 首启生成 admin.token(0600)', async () => {
+  const { createOfflineServer } = await import(`../${DIST}/offline.js`);
+  const { createAdminServer } = await import(`../${DIST}/admin.js`);
+  const tokenFile = path.join(DATA_DIR, 'admin.token');
+  fs.rmSync(tokenFile, { force: true });
+  const A = adminClient(19330);
+  const off = createOfflineServer();
+  const admin = createAdminServer(off, { host: '0.0.0.0', port: 19330 });
+  try {
+    await admin.ready;
+    assert.equal(admin.needsToken, true, '非回环要开 token');
+    assert.equal((await (await fetch(A.base + '/api/status')).status), 401, '没令牌绑公网面该 401');
+    assert.ok(fs.existsSync(tokenFile), '首次启动要生成 admin.token');
+    const mode = fs.statSync(tokenFile).mode & 0o777;
+    assert.equal(mode, 0o600, `admin.token 权限要 0600, 实际 ${mode.toString(8)}`);
+    const tok = fs.readFileSync(tokenFile, 'utf8').trim();
+    assert.equal((await (await fetch(A.base + '/api/status?token=' + tok)).status), 200, '?token= 要能进(WebView 首屏这么带)');
+    assert.equal((await (await fetch(A.base + '/api/status', { headers: { 'X-Admin-Token': tok } })).status), 200, 'X-Admin-Token 要能进(页面后续请求走这条)');
+    assert.equal((await (await fetch(A.base + '/', { headers: { 'x-admin-token': 'wrong' } })).status), 401, '错令牌不许放过');
+  } finally {
+    await admin.close();
+    fs.rmSync(tokenFile, { force: true });
   }
 });
 
@@ -675,7 +821,6 @@ await check('skills: 式杖上限只读 TalentSkill, 满级/材料不足不推�
 // 才崩或面板空白。proto_schema.mjs 把 proto/*.proto 的 required 集读出来当断言输入;
 // checkHandler() 是 B1~B6 每条新 handler 的公共外壳(查回体 required + 手写串号断言 + 落盘回读)。
 const ps = await import('./proto_schema.mjs');
-const SAVE_FILE = config.paths.save;
 
 // handler 会真写档 -> 每条用例自己备份/还原, 跑完 data/save.json 必须回到原样。
 function useSave(content) {
