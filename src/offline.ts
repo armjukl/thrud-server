@@ -10,6 +10,7 @@ import https from "node:https";
 import { config } from "./config.js";
 import { log, record, summary, ensureDirs, hex } from "./logger.js";
 import { createGateway, on, onUnknown, handlerIds, type Gateway } from "./gateway.js";
+import { HANDLERS } from "./payloads.js";
 import { createHttpServer } from "./http.js";
 
 let wired = false;
@@ -91,7 +92,7 @@ export function createOfflineServer(): OfflineServer {
     server = created.server;
     log("info", "http", `HTTP 监听 ${config.tls.enabled ? "https" : "http"}://${config.http.host}:${config.http.port} (SDK 登录/服务器列表/假 CDN)`);
     log("info", "boot", `Thrud(sld) 离线服务端 | resVersion=${config.server.resVersion} build=${config.server.buildVersion} 渠道=${config.server.channel}`);
-    log("info", "boot", `已注册 msgId 处理器: ${handlerIds().join(", ") || "(仅兜底记录)"} | 落盘 ${summary().capture}`);
+    log("info", "boot", `协议表 HANDLERS ${Object.keys(HANDLERS).length} 条可应答 | 网关级注册 ${handlerIds().length} 个 [${handlerIds().join(", ") || "无"}] | 落盘 ${summary().capture}`);
     log("info", "boot", "让客户端过来: 见 docs/README.md (hosts/代理/服务器列表改写 三条路)");
   };
 
