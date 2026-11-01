@@ -38,7 +38,9 @@ gadget 那份 hook 脚本已经 hook 了 `connect()`，顺手把 `127.0.0.1:443`
 | `:app` | `com.sld.offline.server` | `app/build/outputs/apk/debug/app-debug.apk` | 18,730,110 B | 正式壳：前台服务跑假服 + WebView 管理页 |
 
 体积几乎全是 `libnode.so`（发布件 62,475,584 B，AGP 的 `stripDebugSymbols` 剥到 49.5 MB，再 deflate 进包）。
-装机的两份已经整包铺在 `/home/sld/res/apk/sld-offline-probe-v1.apk`、`sld-offline-server-v1.apk`。
+装机用的两份落在 **`/home/sld/apkbuild/`**：`sld-offline-probe-v1.apk`（md5 `744b618a4a14…`）、
+`sld-offline-server-v1.apk`（md5 `aa940f9ae062…`），和上面的 build 产物逐字节一致。
+`res/apk/` 只放游戏包，别混（AGENTS.md 那条"APK 不碰、不重签"说的是游戏 APK，我们的产物也不该去蹭它）。
 
 先装 probe。它证明的是"这台机器的 arm64 libnode 能不能跑起来 + 内存够不够"，
 这两件事错了，后面整条 nodejs-mobile 路线都要推翻（备选是无 Node 的重写，见 §9）。
@@ -65,6 +67,8 @@ npm run build:cjs                              # tsc -> dist-cjs/ (CommonJS) + d
 node tools/pack_nodejs.mjs                     # dist-cjs + 必需数据 -> app/src/main/assets/{code,seed}
 GRADLE_USER_HOME=/home/tmp/gradle-home /home/tmp/gradle/gradle-8.7/bin/gradle \
   --no-daemon -p android :app:assembleDebug    # 换 :probe:assembleDebug 出探针
+# 产物落进 apkbuild(换版就改后缀 v2, 别覆盖掉能装的那一份)
+cp android/app/build/outputs/apk/debug/app-debug.apk /home/sld/apkbuild/sld-offline-server-v1.apk
 ```
 
 探针那份 assets 单独铺：`node tools/pack_nodejs.mjs --main android/probe.js --out android/probe/src/main/assets`。
