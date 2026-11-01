@@ -189,7 +189,8 @@ apksigner verify --print-certs sky-sldgadget_v1.apk         # 5) 验
 设备侧就绪副本就是仓库里的变体文件 `frida/hook_gadget_*.js`（由 [`../frida/make_variants.sh`](../frida/make_variants.sh)
 从 `frida/hook_gadget_all.js` 生成，**变体一律不许手改**），直接覆盖上面那个 `.js` 即可，
 注意**文件名保持 `hook_redirect_trust.js`**，因为配置里写死了这个名字。
-（2026-10 那几轮的快照还在 `/home/tmp/sldcarrier/device-phase1..6/`：phase1=WATCH、phase2=SKIP。）
+（按设备上这个名字铺好的就绪副本在 `/home/sld/apkbuild/gadget-local/` 与 `/home/sld/apkbuild/gadget-tunnel/`，
+改完基线记得重新 `cp` 过去；2026-10 那几轮的快照还在 `/home/tmp/sldcarrier/device-phase1..6/`：phase1=WATCH、phase2=SKIP。）
 
 ### 4.2 载体的提示，以及它对 gadget 的"假阴性"
 
@@ -644,7 +645,8 @@ skipAPI → getClientUpdateData → UIHotUpdate.SendResVersionUpdateRequest → 
   设备上如果还留着 route A 那份手改的 `75320b33…` 外部文件，日志会是 `命中 202 / 本来就是 1 的 1402`
   而不是 `命中 210`；想看清钩子本身就把那个文件删掉让表回到原版（见 [改Lua脚本](README-改Lua脚本.md) §7 第 7 条）。
   `libTool.config.so` 写死了这个路径，所以推上去时文件名必须仍叫 `hook_redirect_trust.js`；变体在仓库里
-  （`frida/hook_gadget_*.js`，`make_variants.sh` 生成，不许手改）：
+  （`frida/hook_gadget_*.js`，`make_variants.sh` 生成，不许手改），给手机的就绪副本按这个名字铺在
+  `/home/sld/apkbuild/gadget-local/` 与 `/home/sld/apkbuild/gadget-tunnel/`（见 [安卓 APK 假服](README-安卓APK假服.md) §6）：
   `hook_gadget_pool_zaxis_skip.js`（`SKIP+POOL+ZAXIS`，推荐，**2026-11-01 重生成后 `eef48793f17b`**）、
   `hook_gadget_local_pool_zaxis_skip.js`（同一份但 `MODE=local`：重定向到 127.0.0.1 且把 sockaddr 的 443 改 9443，
   跑手机 APK 假服才用，`14901874a19e`，见 [安卓 APK 假服](README-安卓APK假服.md)）、

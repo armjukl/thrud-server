@@ -40,6 +40,7 @@ gadget 那份 hook 脚本已经 hook 了 `connect()`，顺手把 `127.0.0.1:443`
 体积几乎全是 `libnode.so`（发布件 62,475,584 B，AGP 的 `stripDebugSymbols` 剥到 49.5 MB，再 deflate 进包）。
 装机用的两份落在 **`/home/sld/apkbuild/`**：`sld-offline-probe-v1.apk`（md5 `744b618a4a14…`）、
 `sld-offline-server-v1.apk`（md5 `aa940f9ae062…`），和上面的 build 产物逐字节一致。
+同目录还有 `gadget-local/` 与 `gadget-tunnel/` 两份就绪 hook 脚本（按设备上的文件名叫，见 §6）。
 `res/apk/` 只放游戏包，别混（AGENTS.md 那条"APK 不碰、不重签"说的是游戏 APK，我们的产物也不该去蹭它）。
 
 先装 probe。它证明的是"这台机器的 arm64 libnode 能不能跑起来 + 内存够不够"，
@@ -163,18 +164,22 @@ quit/restart，所以"关假服"不是杀进程，而是 `socket.close()` + `ser
 
 1. 装 `sld-offline-server-v1.apk`，打开 → 允许通知权限（Android 13+）→ 页面应显示 `running:true`。
    30 秒后还变成"连不上管理页"，那页里就写着 `NodeBridge.lastError()` 原文，通知栏同一句也会显示出来。
-2. 把设备侧 hook 脚本换成 **local 变体**（文件名必须仍叫 `hook_redirect_trust.js`，`libTool.config.so` 写死了这个路径）：
+2. 把设备侧 hook 脚本换成 **local 那份**。就绪副本已经按设备上的文件名铺在 `/home/sld/apkbuild/` 里 ——
+   **文件名必须是 `hook_redirect_trust.js`**（`libTool.config.so` 里写死了这个路径），所以每个模式一个目录：
 
-   ```bash
-   # 基线改了要重生成，变体一律不许手改
-   cd /home/sld/offline-server/frida && ./make_variants.sh
-   # 推到手机（USB 或游戏内文件管理）
-   frida/hook_gadget_local_pool_zaxis_skip.js
-     -> /storage/emulated/0/Android/data/com.wth.thrud.bilibili/files/hook_redirect_trust.js
+   ```
+   /home/sld/apkbuild/gadget-local/hook_redirect_trust.js    MODE=local   手机自服用（md5 14901874a19e）
+   /home/sld/apkbuild/gadget-tunnel/hook_redirect_trust.js   MODE=tunnel  回退用（md5 eef48793f17b）
    ```
 
-   隧道用的那份是 `hook_gadget_pool_zaxis_skip.js`（`MODE=tunnel`，md5 前缀 `eef48793f17b`），
-   local 那份除 `MODE` 外与它逐字节一致（当前 md5 前缀 `14901874a19e`）。
+   覆盖到 `/storage/emulated/0/Android/data/com.wth.thrud.bilibili/files/hook_redirect_trust.js`（USB 或游戏内文件管理）。
+   这两份是**产物**，别手改；改了基线就重新生成再重新铺：
+
+   ```bash
+   cd /home/sld/offline-server/frida && ./make_variants.sh
+   cp hook_gadget_local_pool_zaxis_skip.js /home/sld/apkbuild/gadget-local/hook_redirect_trust.js
+   cp hook_gadget_pool_zaxis_skip.js      /home/sld/apkbuild/gadget-tunnel/hook_redirect_trust.js
+   ```
 3. 冷启动游戏，看 `/storage/emulated/0/Android/data/com.wth.thrud.bilibili/files/gadget.log`：
    - `==== 脚本装载 mode=SKIP net=local ====` ← `net=` 这个字段就是为这一步加的；没有它说明推的是旧文件；
    - `sockaddr 127.0.0.1:443->9443 改写 {"connect":n,"getaddrinfo":m}` ← n+m 为 0 就是改写没生效，
