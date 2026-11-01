@@ -75,6 +75,11 @@ export const config = {
     /** SLD_TLS=1 -> HTTP 侧起 https(需要 certs/server.{crt,key}) */
     enabled: process.env.SLD_TLS === "1",
   },
+  admin: {
+    /** 管理面(开关/存档/日志). 默认只绑回环: 手机上 WebView 走 127.0.0.1, PC 上 adb forward 才够不着. */
+    host: str(process.env.SLD_ADMIN_HOST, "127.0.0.1"),
+    port: num(process.env.SLD_ADMIN_PORT, 19080),
+  },
   gateway: {
     host: str(process.env.SLD_KCP_HOST, "0.0.0.0"),
     port: num(process.env.SLD_KCP_PORT, 8005 + 1000),
