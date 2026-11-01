@@ -21,3 +21,13 @@ __pycache__/
 # frp 隧道凭据(auth.token), 永不入库
 frpc-sld.toml
 frida/frpc-sld.toml
+
+# 安卓工程: 工具链与本地产物都不入库(libnode.so / 13MB 整表产物 / 解出来的 seed)
+.gradle/
+android/**/build/
+android/local.properties
+android/app/libnode/
+android/app/src/main/jniLibs/**/*.so
+android/app/src/main/assets/code/
+android/app/src/main/assets/seed/
+apk/
