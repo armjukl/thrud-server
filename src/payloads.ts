@@ -25,7 +25,7 @@ import { LEADER_QUALITY, WEAPON_GRATE } from "./data/rarity.js";
 import { poolDraw } from "./gacha.js";
 import {
   addExp, addItem, addMoney, checkConsume, countItem, fixedRewardItems, grantWeapon, ITEMTYPE, itemType,
-  leaderLevelExp, leaderMaxLv, newEffects, payConsume, payItemList, upgradeByExp, weaponLevelExp,
+  leaderLevelExp, leaderMaxLv, newEffects, payConsume, payItemList, rewardById, upgradeByExp, weaponLevelExp,
   weaponMaxLv, type Effects, type RewardItem,
 } from "./econ.js";
 import {
@@ -33,6 +33,10 @@ import {
   singleTime, speedUpHangUp, startHangUp,
 } from "./hangup.js";
 import { setSkillLv, skillConsumeId, skillLv, stickMaxLv, upgradeSkill } from "./skills.js";
+import {
+  bumpTask, bumpTimedLogin, claimBoxes, claimTask, COND, drainTaskPush, nextDayRefresh, nextWeekRefresh,
+  rollTasks, taskInfoBody, taskProgressBody,
+} from "./tasks.js";
 import { all, arr, num, row } from "./tbl.js";
 import {
   characterById, defaultCharacter, emptyRand, loadSave, newLevelRecord, saveSave,
@@ -150,6 +154,12 @@ export const CMD = {
   SelectSwearChange: 2001,
   GetSwearRecord: 2002,
   ShowItemPush: 900009, // 展示获得物品推送
+  // 任务/活跃度 (B5). 号见 proto/CmdDefine.proto:150-157; S2C 字段口径见 docs/README-协议清单.md §4.6.
+  GetActivePointReward: 3302,     // 领日常活跃宝箱
+  SubmitTask: 3303,               // 领一条任务
+  BatchSubmitTask: 3308,          // 一键领任务
+  GetWeekActivePointReward: 3309, // 领周常活跃宝箱
+  TaskProgressPush: 900007,       // 服务端主动推任务进度 (repeated progressTaskIdS=1)
 } as const;
 
 export const CMD_NAME: Record<number, string> = Object.fromEntries(
@@ -485,6 +495,9 @@ function trainLevelInfoBody(s: SaveData): Buffer[] {
 export function playerLoginGetInfoS2C(): Buffer {
   const t = now();
   const s = loadSave();
+  // 登录先过一次日/周界: 跨天/跨周要清计数与已领记录, 顺带按等级重挑日常组.
+  const rolled = rollTasks(s, Number(t));
+  if (rolled.day || rolled.week) saveSave(s);
   const sec = s.player.secretary;
   // 看板角色必须在武将列表里(否则 GetHeroDataById 返回 nil), 缺就补一个默认条目.
   const ids = s.characters.map((c) => c.id);
@@ -504,7 +517,7 @@ export function playerLoginGetInfoS2C(): Buffer {
     pb.vfield(7, t),             // nowTime
     pb.vfield(54, t),            // lastLoginTime
     pb.vfield(65, 4),            // refreshTimes (required) 跨天刷新小时
-    pb.vfield(76, t + 604800n),  // nextWeekRefreshTime
+    pb.vfield(76, nextWeekRefresh(Number(t))),  // nextWeekRefreshTime
     pb.vfield(78, s.player.shipStrength),    // shipStrength
     pb.vfield(79, s.player.maxShipStrength), // maxShipStrength
     pb.vfield(88, 1),            // httpStabilityId
@@ -518,7 +531,7 @@ export function playerLoginGetInfoS2C(): Buffer {
       ...GUIDE_IDS.map((id) => pb.vfield(2, id)),
     )),
     pb.vfield(95, t + 2592000n), // nextMonthRefreshTime
-    pb.vfield(96, t + 86400n),   // nextDayRefreshTime
+    pb.vfield(96, nextDayRefresh(Number(t))),  // nextDayRefreshTime
     // serverInfos=14 (repeated ServerInfo): 客户端 NetWorkManager 需要 type=3 聊天服, 否则
     // GetServerInfoByType(3) 返回 nil -> NetWorkManager:56 报错 (每 15s 一次).
     pb.bfield(14, pb.concat(
@@ -562,16 +575,11 @@ export function playerLoginGetInfoS2C(): Buffer {
       pb.vfield(18, s.player.maxStrength), // maxStrength
       pb.vfield(19, t),                    // lastStrengthTime
     )),
-    // taskProgress=47 (TaskProgressInfo): 必须给 chapterIndex/dayGroupIndex.
-    // 缺省 0 会让 TaskDataMgr 把 144 条条件=3100(PatrolLevel) 的任务塞进
-    // mainTaskData/dailyTaskData, TaskTools.GetTaskProgress -> PatrolDataManager
-    // 对 nil 的 patrolLevelInfo 做 pairs -> 崩. 选没有乌啦啦任务的章节(101)与日常分组(10001).
-    pb.bfield(47, pb.concat(
-      pb.vfield(1, 0),      // dayTaskPoint (required)
-      pb.vfield(3, 101),    // chapterIndex (required)
-      pb.vfield(4, 10001),  // dayGroupIndex (required)
-      pb.vfield(5, 0),      // weekTaskPoint (required)
-    )),
+    // taskProgress=47 (TaskProgressInfo) / taskInfo=48 (TaskInfo): 前者给活跃度点+章+日常组+
+    // 我们记过数的那几条进度, 后者给"已领过什么". 缺 48 -> 重登后每条已完成任务又变"可领取",
+    // 同一份奖能刷第二遍. 缺 47 里的 chapterIndex/dayGroupIndex 才是老问题(见 src/tasks.ts 头注).
+    pb.bfield(47, taskProgressBody(s)),
+    pb.bfield(48, taskInfoBody(s)),
   );
 }
 
@@ -616,16 +624,22 @@ function getSignRewardS2C(): Buffer {
   return pb.concat(pb.vfield(2, s.signin.times), pb.vfield(3, s.signin.lastTime), pb.bfield(4, Buffer.alloc(0)));
 }
 
+// 客户端跨天刷新(10005)后会**重新应用** taskProgress=6 / taskInfo=7 (9f4749…:419), 所以这两条
+// 与登录包同源; 界点一律走 tasks.nextDayRefresh/nextWeekRefresh, 别再按自然零点自己算一份.
 function getNextDayUpdateDataS2C(): Buffer {
   const t = Number(now());
-  const dayEdge = (Math.floor((t + TZ8) / DAY) + 1) * DAY - TZ8;      // 下一个 4:00(UTC+8)
+  const s = loadSave();
+  const rolled = rollTasks(s, t);
+  if (rolled.day || rolled.week) saveSave(s);
   const d = new Date(t * 1000);
   const firstNext = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
   return pb.concat(
-    pb.vfield(12, dayEdge + (7 - ((firstNext.getUTCDay() + 6) % 7)) * DAY - TZ8), // nextWeekRefreshTime
+    pb.bfield(6, taskProgressBody(s)),              // taskProgress
+    pb.bfield(7, taskInfoBody(s)),                  // taskInfo
+    pb.vfield(12, nextWeekRefresh(t)),                                                        // nextWeekRefreshTime
     pb.bfield(13, signInfoBody()),                                               // monthSign
     pb.vfield(17, Math.floor(firstNext.getTime() / 1000) - TZ8),                 // nextMonthRefreshTime
-    pb.vfield(19, dayEdge),                                                      // nextDayRefreshTime
+    pb.vfield(19, nextDayRefresh(t)),                                            // nextDayRefreshTime
   );
 }
 
@@ -1240,6 +1254,167 @@ function hangUpSweepS2C(req: GsRequest): GsResult {
   };
 }
 
+// ---- 任务/活跃度 (B5: 3302 日活跃箱 · 3303 领奖 · 3304 进度上报 · 3308 一键领 · 3309 周活跃箱) ----
+// 任务集合/进度/日月周界/校验全在 src/tasks.ts, 这一段只管 GS 帧怎么拼、奖怎么发.
+// comeFrom 用 ActionEnum 里那两个: ComminTask=1001(提交任务) / DayTaskPoint=1002(领活跃点奖励).
+// ShowItemPushHandler 对这两个值没有专门分支 -> 落到通用"获得物品"弹窗, 正是我们要的样子.
+const ACTION_TASK = 1001, ACTION_DAY_POINT = 1002;
+
+/** 领奖后的两条推送: 顶栏数值(发了经验/体力才发) + 奖励展示. ShowItem_Push 不能走 replenish 通道. */
+function taskRewardPushes(s: SaveData, eff: Effects, rewards: RewardItem[], comeFrom: number): Array<[number, Buffer]> {
+  const out: Array<[number, Buffer]> = [];
+  const push = playerExpPush(s, eff);
+  if (push) out.push([CMD.DataPush, push]);
+  if (rewards.length) {
+    out.push([CMD.ShowItemPush, pb.concat(
+      pb.vfield(1, comeFrom),
+      pb.bfield(2, rewardsBuf(rewards.map((r) => [r.itemId, r.count] as [number, number]))),
+    )]);
+  }
+  return out;
+}
+
+/** 一堆 RewardItem 按 itemId 并成一行 (客户端"获得物品"窗按行展示, 同一道具拆成几条很难看). */
+function mergeRewards(rows: RewardItem[]): RewardItem[] {
+  const m = new Map<number, number>();
+  for (const r of rows) m.set(r.itemId, (m.get(r.itemId) ?? 0) + r.count);
+  return [...m].sort((a, b) => a[0] - b[0]).map(([itemId, count]) => ({ itemId, count }));
+}
+
+const rewardRows = (rows: RewardItem[]): Array<[number, number]> => rows.map((r) => [r.itemId, r.count] as [number, number]);
+
+/**
+ * 3303 SubmitTask{required taskId=1} -> SubmitTask_S2C{reward=1, dayTaskPoint=2, chapterIndex=3,
+ * overTask=4, required weekTaskPoint=5}. 客户端 SubmitTaskAndUpdate(TaskDataMgr:165) 只读后面四个:
+ * overTask 落成 passedTaskIds, 两个点数刷活跃度条, chapterIndex 变了就 InitTaskList 重拉列表 ——
+ * **reward=1 它压根不看**, 奖靠 ShowItem_Push 展示. 不达标就 deny: 回一条"没领"的 S2C 会让它把
+ * 这条任务标成已领, 奖却没发.
+ */
+function submitTaskS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const id = reqNum(req, 1) ?? 0;
+  const sec = nowSec();
+  const r = claimTask(s, id, sec);
+  if (!r.ok) return deny(`SubmitTask ${id}: ${r.why}`);
+  const eff = newEffects();
+  const rewards = mergeRewards(rewardById(s, r.rewardId, eff));
+  saveSave(s);
+  log("info", "task", `SubmitTask ${id} -> 奖${r.rewardId} 发[${rewards.map((x) => `${x.itemId}×${x.count}`).join(",") || "空"}] 活跃点 +${r.point} -> 日${s.tasks.dayTaskPoint}/周${s.tasks.weekTaskPoint} 章节=${s.tasks.taskChapter}`);
+  return {
+    body: pb.concat(
+      ...(rewards.length ? [pb.bfield(1, rewardsBuf(rewardRows(rewards)))] : []),
+      pb.vfield(2, s.tasks.dayTaskPoint),
+      pb.vfield(3, s.tasks.taskChapter),
+      pb.bfield(4, protoHash(id, sec)),          // overTask{key=任务id, value=完成时间}
+      pb.vfield(5, s.tasks.weekTaskPoint),
+    ),
+    pushes: [],
+    extra: taskRewardPushes(s, eff, rewards, ACTION_TASK),
+    mainInCompleted: true,
+  };
+}
+
+/** 一键领取的 type (BatchSubmitTask{required type=2}): 1日 2主线 3周 4活动, 只用来对账打日志. */
+const BATCH_TYPE_NAME: Record<number, string> = { 1: "日常", 2: "主线", 3: "周常", 4: "活动" };
+
+/**
+ * 3308 BatchSubmitTask{taskIds=1, required type=2} -> BatchSubmitTask_S2C{dayTaskPoint=1,
+ * chapterIndex=2, repeated overTask=3, required weekTaskPoint=4}. 客户端按 isOneClick 走 ipairs
+ * 逐条 append overTask, 所以**每条领成的都要列进来**; 表里没这条/没达标的那些直接跳过 ——
+ * 它是列表里挑达标项发的一键请求, 个别不成立不算失败.
+ */
+function batchSubmitTaskS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const ids = reqNums(req, 1);
+  const type = reqNum(req, 2) ?? 0;
+  if (!ids.length) return deny("BatchSubmitTask 没带 taskIds");
+  const sec = nowSec();
+  const eff = newEffects();
+  const claimed: number[] = [];
+  const rewards: RewardItem[] = [];
+  const skipped: string[] = [];
+  for (const id of ids) {
+    const r = claimTask(s, id, sec);
+    if (!r.ok) { skipped.push(`${id}(${r.why})`); continue; }
+    claimed.push(id);
+    rewards.push(...rewardById(s, r.rewardId, eff));
+  }
+  if (!claimed.length) return deny(`BatchSubmitTask type=${type} 没有一条可领: ${skipped.join(" ")}`);
+  saveSave(s);
+  const got = mergeRewards(rewards);
+  log("info", "task", `BatchSubmitTask ${BATCH_TYPE_NAME[type] ?? type} 发${claimed.length}条[${claimed.join(",")}] 奖[${got.map((x) => `${x.itemId}×${x.count}`).join(",") || "空"}] 活跃点 日${s.tasks.dayTaskPoint}/周${s.tasks.weekTaskPoint}${skipped.length ? ` 跳过 ${skipped.join(" ")}` : ""}`);
+  return {
+    body: pb.concat(
+      pb.vfield(1, s.tasks.dayTaskPoint),
+      pb.vfield(2, s.tasks.taskChapter),
+      ...claimed.map((id) => pb.bfield(3, protoHash(id, sec))),
+      pb.vfield(4, s.tasks.weekTaskPoint),
+    ),
+    pushes: [],
+    extra: taskRewardPushes(s, eff, got, ACTION_TASK),
+    mainInCompleted: true,
+  };
+}
+
+/**
+ * 3302 GetActivePointReward{id=1} -> {reward=1, repeated activePointId=2}.
+ * 客户端把 activePointId **append** 进 passedDayPoints, 所以只能回"这次新领的格子" —— 回重了会
+ * 重复计数, 回全部已领的等于把老格子再塞一遍.
+ */
+function activePointRewardS2C(req: GsRequest): GsResult {
+  return boxesS2C(req, "day");
+}
+
+/** 3309 GetWeekActivePointReward{id=1} -> {repeated id=1}: S2C 里没有 rewards, 奖只靠 ShowItem_Push. */
+function weekActivePointRewardS2C(req: GsRequest): GsResult {
+  return boxesS2C(req, "week");
+}
+
+function boxesS2C(req: GsRequest, kind: "day" | "week"): GsResult {
+  const s = loadSave();
+  const ids = reqNums(req, 1);
+  if (!ids.length) return deny(`Get${kind === "day" ? "Active" : "WeekActive"}PointReward 没带格子 id`);
+  const box = claimBoxes(s, ids, kind);
+  if (!box) return deny(`${kind} 活跃箱: ${ids.join(",")} 没一条达标又没领过 (${kind === "day" ? s.tasks.dayTaskPoint : s.tasks.weekTaskPoint}点)`);
+  const eff = newEffects();
+  const rewards: RewardItem[] = [];
+  for (const rid of box.rewardIds) rewards.push(...rewardById(s, rid, eff));
+  saveSave(s);
+  const got = mergeRewards(rewards);
+  log("info", "task", `${kind} 活跃箱 领[${box.claimed.join(",")}] 点${kind === "day" ? s.tasks.dayTaskPoint : s.tasks.weekTaskPoint} 奖[${got.map((x) => `${x.itemId}×${x.count}`).join(",") || "空"}]`);
+  return {
+    body: kind === "day"
+      ? pb.concat(
+        ...(got.length ? [pb.bfield(1, rewardsBuf(rewardRows(got)))] : []),
+        ...box.claimed.map((id) => pb.vfield(2, id)),
+      )
+      : pb.concat(...box.claimed.map((id) => pb.vfield(1, id))),
+    pushes: [],
+    extra: taskRewardPushes(s, eff, got, ACTION_DAY_POINT),
+    mainInCompleted: true,
+  };
+}
+
+/**
+ * 3304 SetSpecialTaskProgress{required type=1, num=2}: type 就是 ServerTaskType 条件号.
+ * 只见到两类: 1002 秘书互动, 3000 指定时段登录(客户端只在窗口内发, 档位 40000/40001 得我们自己分,
+ * 见 tasks.bumpTimedLogin). 别的号照 num 记一份, 表里没对应任务就是白记.
+ * 这条在 TaskMsg 里**没有注册 handler**, 回包内容没人读 —— 但 SetSpecialTaskProgress_S2C 的
+ * errCode=1 是 required, 缺了 Lua 侧 pbNew.decode 直接报错, 所以照旧回.
+ */
+function setSpecialTaskProgressS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const type = reqNum(req, 1) ?? 0;
+  const n = reqNum(req, 2) ?? 1;
+  if (!type) return deny("SetSpecialTaskProgress type=0");
+  // 时段登录那档两个窗口都记过了就到此为止(不涨但仍要成包回), 其余条件照报来的次数记.
+  const bumped = type === COND.timedLogin ? bumpTimedLogin(s) : (bumpTask(s, type, n), true);
+  if (!bumped) return pb.vfield(1, 0);
+  saveSave(s);
+  log("info", "task", `SetSpecialTaskProgress type=${type} num=${n}${type === COND.timedLogin ? " (按还没计过的时段档 +1)" : ""}`);
+  return pb.vfield(1, 0);
+}
+
 // ---- 抽卡 (按池真实掉落 roll) ----
 // 掉落链来自客户端 LotteryInstance_Xls -> Drop_Xls -> DropSet_Xls -> DropGroup_Xls (src/gacha.ts).
 // 每次出货归属该池的真实掉落集(角色池出角色/武器池出武器/材料等), 客户端才会正常展示.
@@ -1315,6 +1490,7 @@ function swearHeroS2C(req: GsRequest): GsResult {
   const got = drawn.length;
   const total = (s.gacha[String(poolId)] || 0) + got;
   s.gacha[String(poolId)] = total;
+  bumpTask(s, COND.swear, got);   // 1701 按实际出货数记, 别按请求的 number
   saveSave(s);
   log("info", "gacha", `SwearHero pool=${poolId} n=${n} got=${got} -> [${drawn.join(",")}]`);
   const rewardsMsg = pb.concat(...rewards.map((p) => pb.bfield(1, p))); // Rewards{ rewardItem }
@@ -1393,6 +1569,7 @@ function upgradeLeaderS2C(req: GsRequest): GsResult {
   const r = upgradeByExp(c.level, c.exp, cap, leaderLevelExp);
   c.level = r.level;
   c.exp = r.exp;
+  if (r.raised) bumpTask(s, COND.leaderUp, r.raised);   // 2203 数的是"升级"次数, 不是点了几下
   saveSave(s);
   // 到顶时经验照旧入账(路 B 同口径: 攒着的经验在下次突破后一次滚级), 所以不 deny 也不报错.
   log("info", "leader", `UpgradeLeader ${lid} +${gained}exp -> lv${r.level}/${cap} exp=${r.exp} raised=${r.raised}`);
@@ -1487,6 +1664,7 @@ function upgradeSkillS2C(cmd: string, leaderField: number, kind: "active" | "tal
     const cid = skillConsumeId(sid, skillLv(c, sid, kind), kind);
     const [ok, why] = upgradeSkill(s, c, sid, kind, eff);
     if (!ok) return deny(`${cmd} ${why}`);
+    bumpTask(s, COND.skillUp);
     saveSave(s);
     log("info", "leader", `${cmd} ${lid} skill=${sid} -> lv${skillLv(c, sid, kind)} consumeId=${cid}`);
     return { body: pb.bfield(leaderField, leaderInfo(s, c)), pushes: [[CMD.DataPush, leaderDataPush(s, c, eff)]] };
@@ -1506,7 +1684,7 @@ function upgradeStickSkillS2C(req: GsRequest): GsResult {
   if (!c || !sid) return deny(`UpgradeStickSkill 参数 lid=${lid} skill=${sid}`);
   const cur = skillLv(c, sid, "stick");
   const max = stickMaxLv(sid);
-  if (cur < max) setSkillLv(c, sid, "stick", cur + 1);
+  if (cur < max) { setSkillLv(c, sid, "stick", cur + 1); bumpTask(s, COND.skillUp); }
   saveSave(s);
   log("info", "leader", `UpgradeStickSkill ${lid} skill=${sid} 表id=${rowId} lv=${cur}->${skillLv(c, sid, "stick")}/${max}`);
   return { body: pb.bfield(1, leaderInfo(s, c)), pushes: [[CMD.DataPush, leaderDataPush(s, c, newEffects())]] };
@@ -1621,6 +1799,7 @@ function upgradeWeaponS2C(req: GsRequest): GsResult {
   const r = upgradeByExp(w.level, w.exp + gained, cap, (lv) => weaponLevelExp(grateOf(w.cfg), lv));
   w.level = r.level;
   w.exp = r.exp;
+  bumpTask(s, COND.weaponUp);   // 2201 数"强化"这一次(材料确实喂进去了), 到顶没涨级也算
   saveSave(s);
   log("info", "weapon", `UpgrageWeapon ${oid} +${gained}exp -> lv${r.level}/${cap} exp=${r.exp} raised=${r.raised}`);
   // 满级时 r.raised=0, 客户端比 aftLv > befLv 得 false -> 走 notice 605(已达上限)而不是成功窗,
@@ -1718,6 +1897,7 @@ function upgradeWeaponRefineS2C(req: GsRequest): GsResult {
   if (w.refine + add > max) return deny(`1207 超上限 ${w.refine}+${add}>${max}`);
   w.refine += add;
   s.weapons = s.weapons.filter((x) => !cards.includes(x));
+  bumpTask(s, COND.weaponUp);   // 精炼也归 2201"武装强化"这一条
   saveSave(s);
   log("info", "weapon", `UpgradeWeaponRefineLevel ${oid} -> ${w.refine}/${max} 吞卡 ${cards.length} 张`);
   return {
@@ -1775,6 +1955,7 @@ function recastingWeaponS2C(req: GsRequest): GsResult {
   const aligned = kind === RECAST_SKILL ? pend.skill.length === w.rand.skill.length : pend.key.length === w.rand.key.length;
   if (!aligned) return deny(`1208 摇出的条数对不上 ${oid}`);
   w.last = pend;
+  bumpTask(s, COND.recast);   // 2204 洗一次记一次(确认/放弃都不回退)
   if (kind === RECAST_SKILL) w.recastingSkillTime = round;
   else w.recastingTime = round;
   saveSave(s);
@@ -1830,7 +2011,7 @@ function battleAck(tag: string): GsBuilder {
   };
 }
 
-export const HANDLERS: Record<number, GsBuilder> = {
+const RAW_HANDLERS: Record<number, GsBuilder> = {
   [CMD.PlayerLogin]: playerLoginS2C,
   [CMD.PlayerLoginGetInfo]: playerLoginGetInfoS2C,
   [CMD.GetPrologue]: getPrologueS2C,
@@ -1894,9 +2075,12 @@ export const HANDLERS: Record<number, GsBuilder> = {
   [CMD.SwearHero]: swearHeroS2C,
   [CMD.SelectSwearChange]: () => Buffer.alloc(0),
   [CMD.GetSwearRecord]: getSwearRecordS2C,
-  // SetSpecialTaskProgress_S2C{ required int32 errCode=1 } — 秘书互动等任务的进度回执,
-  // required 字段缺了 Lua 侧 pbNew.decode 直接报错.
-  [CMD.SetSpecialTaskProgress]: () => pb.vfield(1, 0),
+  // 任务/活跃度 (B5): 状态与校验在 src/tasks.ts, 三条领奖都带 ShowItem_Push 展示(见 §任务段注释).
+  [CMD.SubmitTask]: submitTaskS2C,
+  [CMD.BatchSubmitTask]: batchSubmitTaskS2C,
+  [CMD.GetActivePointReward]: activePointRewardS2C,
+  [CMD.GetWeekActivePointReward]: weekActivePointRewardS2C,
+  [CMD.SetSpecialTaskProgress]: setSpecialTaskProgressS2C,
   // 以下几种的 S2C 只有 optional/repeated, 空 body 即"新号无数据"; 但仍要**成包**回,
   // 否则客户端派发器收不到这个 msgId, 面板回调永不触发 (签到弹窗关不掉就是这么来的).
   [CMD.GetAllFriendInfo]: () => Buffer.alloc(0),        // GetAllFriendInfo_S2C{repeated ...=1}
@@ -1907,3 +2091,24 @@ export const HANDLERS: Record<number, GsBuilder> = {
   [CMD.GetRogueInfoListPage]: () => Buffer.alloc(0),
   [CMD.GetElementRuinsLevelGroupList]: () => Buffer.alloc(0),
 };
+
+/**
+ * 出口统一挂 TaskProgress_Push(900007). 被动计数散在 econ 深处(扣一笔消耗、发一件奖励),
+ * 调用方根本不知道任务动了 —— 逐条 handler 去挂不现实, 就在每个 handler 跑完收一次.
+ * 900007 不在 Lua 的 Ignore_Replenish_MsgID 里(那里面只有 ShowItem_Push), 走 replenish 通道安全.
+ * deny 不挂: 客户端此刻认定"什么都没发生"; 计数已落进存档, 下次登录/10005 靠 taskProgress 补回.
+ */
+function withTaskPush(build: GsBuilder): GsBuilder {
+  return (req) => {
+    const out = build(req);
+    const body = drainTaskPush();
+    if (!body) return out;
+    if (Buffer.isBuffer(out)) return { body: out, pushes: [[CMD.TaskProgressPush, body]] };
+    if (out.deny) return out;
+    return { ...out, pushes: [...(out.pushes ?? []), [CMD.TaskProgressPush, body]] };
+  };
+}
+
+export const HANDLERS: Record<number, GsBuilder> = Object.fromEntries(
+  Object.entries(RAW_HANDLERS).map(([id, build]) => [Number(id), withTaskPush(build)]),
+);

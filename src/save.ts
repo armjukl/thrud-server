@@ -99,10 +99,13 @@ export interface SaveTasks {
   dayTaskPoint: number;
   /** 本周活跃度(周界清) */
   weekTaskPoint: number;
-  /** 已领奖任务: taskId(字符串) -> 领奖时刻(ms) */
+  /** 已领奖任务: taskId(字符串) -> 领奖时刻(**秒**, 与 proto 里的完成时间同单位) */
   passedTasks: Record<string, number>;
-  /** 后端侧任务进度: taskId(字符串) -> 进度值 */
-  progress: Record<string, number>;
+  /**
+   * 后端侧任务计数. 键是 `<口径>:<条件号>[:<conditionParam1>]`, 口径取 day/week/total 三份 ——
+   * 同一个条件在日常/周常/成就里的计数边界不一样. 只有 src/tasks.ts 读写这一列, 手改存档一般不用碰.
+   */
+  counters: Record<string, number>;
   /** 已领的日活跃度宝箱 id */
   passedDayPoints: number[];
   /** 已领的周活跃度宝箱 id */
@@ -320,7 +323,7 @@ export const DEFAULT_SAVE: SaveData = {
     dayTaskPoint: 0,
     weekTaskPoint: 0,
     passedTasks: {},
-    progress: {},
+    counters: {},
     passedDayPoints: [],
     passedWeekPoints: [],
     rollDay: 0,
@@ -508,7 +511,7 @@ export function normalizeSave(raw: unknown): SaveData {
       dayTaskPoint: num(t.dayTaskPoint, 0),
       weekTaskPoint: num(t.weekTaskPoint, 0),
       passedTasks: numMap(t.passedTasks),
-      progress: numMap(t.progress),
+      counters: numMap(t.counters),
       passedDayPoints: numArr(t.passedDayPoints),
       passedWeekPoints: numArr(t.passedWeekPoints),
       rollDay: num(t.rollDay, 0),

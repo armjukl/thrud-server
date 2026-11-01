@@ -951,7 +951,7 @@ const saveFixture = () => ({
   signin: { month: 20016, times: 5, day: 4, lastTime: 1700000000000 },
   tasks: {
     taskChapter: 102, dayGroupIndex: 10002, dayTaskPoint: 30, weekTaskPoint: 80,
-    passedTasks: { '3100': 1 }, progress: { '3100': 2 },
+    passedTasks: { '3100': 1 }, counters: { 'day:1502:13': 20, 'total:1802': 3 },
     passedDayPoints: [1, 2], passedWeekPoints: [3], rollDay: 1700000000000, rollWeek: 1700000000000,
   },
   bg: { open: 1700000000, sign: 3, signTime: 1700000000, bingo: [1, 2], redDot: true },
@@ -1291,7 +1291,8 @@ await check('proto: 注册表完整 (基线 handler 不掉 / 第一档进度对�
   const TIER1_DONE = [1002, 1003, 1004, 1005, 1008, 1010, 1011, 1016,   // B1 养成(1001 重构不在此列)
     1201, 1202, 1204, 1205, 1207, 1208, 1209,                            // B2 武装
     3005,                                                                 // B3 通关
-    30400, 30401, 30402, 30403, 30404, 30405];                          // B4 挂机
+    30400, 30401, 30402, 30403, 30404, 30405,                          // B4 挂机
+    3302, 3303, 3308, 3309];                                             // B5 任务 (3304 基线就有, 不在此列)
   const stillMissing = TIER1_NEW.filter((id) => !registered.has(id)).sort((a, b) => a - b);
   const declared = TIER1_NEW.filter((id) => !TIER1_DONE.includes(id)).sort((a, b) => a - b);
   assert.deepEqual(stillMissing, declared,
@@ -1371,7 +1372,7 @@ await checkHandler('B1 1001 UpgradeLeader: 扣素材换经验并按 LeaderLv 曲
     assert.ok(c.level <= 20, `本突(breach=0)上限 20, 升到 ${c.level} 是越顶`);
     assert.equal(s.items['1020004'], 2, '素材要真扣');
     assert.ok(c.exp >= 0, '剩余经验要落账(不能吞掉)');
-    assert.ok(res.pushes.length === 1, '养成只推一条 Data_Push');
+    assert.deepEqual(res.pushes.map(([h]) => h), [DPUSH, 900007], '养成推一条 Data_Push, 外加一条任务进度推送(消耗计入 1502)');
   },
 });
 
@@ -2563,6 +2564,253 @@ await check('B4 30402/30404/30405 的越界: 不在挂机中不许加速 / 没�
   assert.equal(num1(rewardOfPush(cancel.res)[0], 3), 4 * HU_DROP, '记录没了按全部场次结算, 不能凭空吞奖励');
   assert.equal(cancel.after.player.strength, 20, '计划场次都算完成了, 没有可返还的');
   assert.equal(cancel.after.hangUp.state, 0, '会话清掉');
+});
+
+// ---------------------------------------------------------------- 4i. B5 任务/活跃度 (3302/3303/3304/3308/3309)
+// 底档: 任务块清空, 章节 101 / 日常组 10001, rollDay/rollWeek 钉在"此刻"(毫秒) —— 不然
+// rollTasks 会把这份档当跨天档先清一遍, 用例里写的计数与已领记录凭空消失.
+const MAIN_TASK = 2000101;       // 第 101 章第一条: cond 1401(通关), 真值在客户端本地 -> 服务端不该拦
+const MAIN_REST = [2000102, 2000103, 2000104, 2000105, 2000106];
+const CHAPTER_OVER = 2000113;    // 第 101 章的 cond 1901"本章全部完成"
+const D_SEC = 1000004;           // 日常 cond 1002 秘书互动 1 次 (ap10)
+const D_STRENGTH = 1000013;      // 日常 cond 1502 累计消耗 50 点感知 (param=13, ap20)
+const D_TIMED = [1000001, 1000002];   // 日常 cond 3000 两档时段登录 (12 点 / 16 点)
+
+const taskSave = (mut) => {
+  const s = trainSave();
+  const sec = Math.floor(Date.now() / 1000);
+  s.player.level = 1;
+  s.tasks = {
+    taskChapter: 101, dayGroupIndex: 10001, dayTaskPoint: 0, weekTaskPoint: 0,
+    passedTasks: {}, counters: {}, passedDayPoints: [], passedWeekPoints: [],
+    rollDay: sec * 1000, rollWeek: sec * 1000,
+  };
+  if (mut) mut(s);
+  return s;
+};
+const idReq = (id) => GProto.vfield(1, id);
+const taskOfPush = (res, head) => {
+  const p = (res.pushes ?? []).concat(res.extra ?? []).find(([h]) => h === head);
+  assert.ok(p, `推送里找不到 ${head}`);
+  return GProto.decodeFields(p[1]);
+};
+/** ProtoHashInt2Int{key=1,value=2} 摊成 [[key,value],..] */
+const kvList = (dec, field) => dec.filter((f) => f.field === field)
+  .map((f) => GProto.decodeFields(f.value))
+  .map((x) => [Number(fld(x, 1)?.value), Number(fld(x, 2)?.value)]);
+
+await checkHandler('B5 3303 SubmitTask: 客户端本地算的那类(通关)不拦, overTask 回 id+秒, 奖走 ShowItem_Push(1001)', 3303, {
+  save: taskSave(),
+  req: idReq(MAIN_TASK),
+  push: [[900009, 'ShowItem_Push']],
+  fields: (dec, { res }) => {
+    assert.equal(num1(dec, 2), 0, 'dayTaskPoint=2: 主线任务不给活跃度点');
+    assert.equal(num1(dec, 3), 101, 'chapterIndex=3 要回(和客户端不一致才会 InitTaskList)');
+    assert.equal(num1(dec, 5), 0, 'weekTaskPoint=5 是 required, 没涨也得回 0');
+    const over = kvList(dec, 4);
+    assert.equal(over.length, 1, 'overTask 只列刚领的这条');
+    assert.equal(over[0][0], MAIN_TASK, 'overTask.key 是任务 id');
+    const secNow = Math.floor(Date.now() / 1000);
+    assert.ok(Math.abs(over[0][1] - secNow) <= 2, `overTask.value 是完成时间(秒), 现在 ${over[0][1]}`);
+    assert.equal(num1(taskOfPush(res, 900009), 1), 1001, 'comeFrom=ActionEnum.ComminTask');
+  },
+  after: (s) => {
+    assert.ok(s.tasks.passedTasks[String(MAIN_TASK)] > 0, '领奖要落盘: 重登靠 taskInfo=48 认它');
+    assert.equal(s.tasks.counters['total:2502:2'], 1, '完成次数按 missionType 记一笔 2502');
+  },
+});
+
+await checkHandler('B5 3303: 已领过的再发一次 -> 拒单, 完成时间与奖都不动', 3303, {
+  save: taskSave((s) => { s.tasks.passedTasks[String(MAIN_TASK)] = 1700000000; }),
+  req: idReq(MAIN_TASK),
+  deny: /已领过/,
+  after: (s) => {
+    assert.equal(s.tasks.passedTasks[String(MAIN_TASK)], 1700000000, '拒单不能改写完成时间');
+    assert.deepEqual(s.tasks.counters, {}, '拒单不该顺带记完成次数');
+  },
+});
+
+await check('B5 3303: 后端型条件按计数拦 (day:1502:13 要 50 点), 数够了才发并把 ap 点计进日常', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const run = (save) => {
+    const restore = useSave(save);
+    try {
+      return { res: HANDLERS[3303]({ msgId: 3303, packetUUid: 1, proto: idReq(D_STRENGTH), headerHex: '' }), after: loadSave() };
+    } finally { restore(); }
+  };
+  const noKey = run(taskSave());
+  assert.match(noKey.res.deny ?? '', /进度 0\/50/, '一次都没消耗过 -> 就是 0, 不能当"看不见"放行');
+  const short = run(taskSave((s) => { s.tasks.counters['day:1502:13'] = 49; }));
+  assert.match(short.res.deny ?? '', /进度 49\/50/);
+  assert.equal(short.after.tasks.passedTasks[String(D_STRENGTH)], undefined, '拦下时不能把这条标成已领');
+  const ok = run(taskSave((s) => { s.tasks.counters['day:1502:13'] = 50; }));
+  assert.ok(!ok.res.deny, `数够了该放行, 实际 ${ok.res.deny}`);
+  assert.equal(ok.after.tasks.dayTaskPoint, 20, 'ap20 进日常活跃点');
+  assert.equal(ok.after.tasks.counters['day:2303'], 20, '活跃点数本身也是 2303 的一条计数');
+});
+
+await checkHandler('B5 3308 BatchSubmitTask: 逐条判, overTask 只列领到的那条', 3308, {
+  save: taskSave((s) => {
+    s.tasks.passedTasks[String(MAIN_TASK)] = 1700000000;   // 已领 -> 跳过
+    s.tasks.counters['day:1002'] = 1;                      // 秘书互动那条达标
+  }),
+  req: GProto.concat(idReq(MAIN_TASK), idReq(CHAPTER_OVER), idReq(D_SEC), GProto.vfield(2, 1)),
+  fields: (dec, { res }) => {
+    assert.deepEqual(kvList(dec, 3).map(([k]) => k), [D_SEC], '两条不成立的不能混进 overTask');
+    assert.equal(num1(dec, 1), 10, 'dayTaskPoint=1 是那条日常任务的 ap');
+    assert.equal(num1(dec, 4), 0, 'weekTaskPoint=4 是 required');
+    assert.equal(num1(taskOfPush(res, 900009), 1), 1001);
+  },
+  after: (s) => {
+    assert.ok(s.tasks.passedTasks[String(D_SEC)], '达标那条要落盘');
+    assert.equal(Object.keys(s.tasks.passedTasks).length, 2, '跳过的那条不能新增');
+  },
+});
+
+await checkHandler('B5 3308: 一条都不成立 -> 拒单且不新增已领', 3308, {
+  save: taskSave(),
+  req: GProto.concat(idReq(D_SEC), idReq(D_STRENGTH), GProto.vfield(2, 1)),
+  deny: /没有一条可领/,
+});
+
+await checkHandler('B5 3302 GetActivePointReward: 达标格全领, activePointId 只回这次新领的', 3302, {
+  save: taskSave((s) => { s.tasks.dayTaskPoint = 45; }),
+  req: GProto.concat(idReq(1), idReq(2), idReq(3)),
+  push: [[900009, 'ShowItem_Push']],
+  fields: (dec, { res }) => {
+    assert.deepEqual(dec.filter((f) => f.field === 2).map((f) => Number(f.value)), [1, 2],
+      '45 点够 20/40 两格, 60 那格不许混进来');
+    assert.ok(dec.some((f) => f.field === 1), 'reward=1 带 Rewards(留给抓包对账)');
+    assert.equal(num1(taskOfPush(res, 900009), 1), 1002, 'comeFrom=ActionEnum.DayTaskPoint');
+  },
+  after: (s) => assert.deepEqual(s.tasks.passedDayPoints, [1, 2], '已领格子要落盘, 重登靠 taskInfo=48 认'),
+});
+
+await checkHandler('B5 3302: 点数不够 -> 拒单且不动格子', 3302, {
+  save: taskSave((s) => { s.tasks.dayTaskPoint = 10; }),
+  req: idReq(1),
+  deny: /没一条达标/,
+  after: (s) => assert.deepEqual(s.tasks.passedDayPoints, []),
+});
+
+await checkHandler('B5 3309 GetWeekActivePointReward: 回体只有 repeated id, 奖靠 ShowItem_Push', 3309, {
+  save: taskSave((s) => { s.tasks.weekTaskPoint = 25; }),
+  req: idReq(26),
+  push: [[900009, 'ShowItem_Push']],
+  fields: (dec) => {
+    assert.deepEqual(dec.map((f) => f.field), [1], 'GetWeekActivePointReward_S2C 只有 id=1, 别塞 reward 进去');
+    assert.equal(Number(fld(dec, 1).value), 26);
+  },
+  after: (s) => assert.deepEqual(s.tasks.passedWeekPoints, [26]),
+});
+
+await checkHandler('B5 3304 SetSpecialTaskProgress: 记日常组那条并推 900007', 3304, {
+  save: taskSave(),
+  req: GProto.concat(idReq(1002), GProto.vfield(2, 1)),
+  push: [[900007, 'TaskProgress_Push']],
+  fields: (dec) => assert.equal(num1(dec, 1), 0, 'errCode=1 是 required, 缺了 pbNew.decode 直接报错'),
+  after: (s, { res }) => {
+    assert.equal(s.tasks.counters['day:1002'], 1, '三个口径各记一份, 日常行取 day:');
+    assert.equal(s.tasks.counters['total:1002'], 1);
+    assert.deepEqual(kvList(taskOfPush(res, 900007), 1), [[D_SEC, 1]],
+      '只推"客户端此刻看得见"的那一条(10002 组的秘书互动不在当前日常组)');
+  },
+});
+
+await check('B5 3304 时段登录: 上报不带档位, 按 40000/40001 两档各补一次, 第三发不再涨', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const restore = useSave(taskSave());
+  try {
+    const req3000 = idReq(3000);
+    const call = () => kvList(taskOfPush(HANDLERS[3304]({ msgId: 3304, packetUUid: 1, proto: req3000, headerHex: '' }), 900007), 1);
+    assert.deepEqual(call(), [[D_TIMED[0], 1]], '第一发补 12 点档, 只推那一条');
+    const c1 = loadSave().tasks.counters;
+    assert.equal(c1['day:3000:40000'], 1, '该补上 40000 档');
+    assert.equal(c1['day:3000:40001'], undefined, '16 点档这发不该一起补');
+    assert.deepEqual(call(), [[D_TIMED[0], 1], [D_TIMED[1], 1]],
+      '第二发把 16 点档也记上; 按 cond 找可见行, 所以两条都进推送(值幂等, 客户端覆盖同一份数)');
+    assert.equal(loadSave().tasks.counters['day:3000:40001'], 1, '该补上 40001 档');
+    const third = HANDLERS[3304]({ msgId: 3304, packetUUid: 2, proto: req3000, headerHex: '' });
+    assert.ok(Buffer.isBuffer(third) || !third.deny, '两档都满了只是不再涨, 不该报错');
+    assert.ok(Buffer.isBuffer(third) || !third.pushes?.length, '没有变化就不挂 900007');
+    const c = loadSave().tasks.counters;
+    assert.equal(c['day:3000'], 2, '两档满了就到顶, 狂发 3304 也刷不出第三条');
+  } finally { restore(); }
+});
+
+await check('B5 3303: 本章没领完不许领"章节完成", 领完才把 chapterIndex 推到 102', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const run = (save) => {
+    const restore = useSave(save);
+    try {
+      return { res: HANDLERS[3303]({ msgId: 3303, packetUUid: 1, proto: idReq(CHAPTER_OVER), headerHex: '' }), after: loadSave() };
+    } finally { restore(); }
+  };
+  const early = run(taskSave((s) => { s.tasks.passedTasks[String(MAIN_TASK)] = 1700000000; }));
+  assert.match(early.res.deny ?? '', /第 101 章还有 5 条没领/, 'cond 1901 要按"同章其余行都领了"判');
+  assert.equal(early.after.tasks.taskChapter, 101, '拦下时不能把章号推走');
+  const full = run(taskSave((s) => {
+    for (const id of [MAIN_TASK, ...MAIN_REST]) s.tasks.passedTasks[String(id)] = 1700000000;
+  }));
+  assert.ok(!full.res.deny, `该放行, 实际 ${full.res.deny}`);
+  assert.equal(num1(GProto.decodeFields(full.res.body), 3), 102, '回包 chapterIndex 要给新章号');
+  assert.equal(full.after.tasks.taskChapter, 102, '章号推进要落盘');
+});
+
+await check('B5 登录包 47/48: 跨天界点先清日常, 已领记录只留非日常的, 顺带补登录天数', async () => {
+  const { playerLoginGetInfoS2C } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const sec = Math.floor(Date.now() / 1000);
+  const restore = useSave(taskSave((s) => {
+    s.tasks.counters = { 'day:1502:13': 60, 'week:1802': 2, 'total:1802': 2 };
+    s.tasks.dayTaskPoint = 30;
+    s.tasks.passedDayPoints = [1];
+    s.tasks.passedTasks = { [D_STRENGTH]: 1700000000, [MAIN_TASK]: 1700000001 };
+    s.tasks.rollDay = (sec - 86400) * 1000;   // 昨天 -> 该跨天
+    s.tasks.rollWeek = sec * 1000;            // 本周内 -> 不动
+  }));
+  try {
+    const dec = GProto.decodeFields(playerLoginGetInfoS2C());
+    const tp = GProto.decodeFields(fld(dec, 47).value);
+    assert.equal(num1(tp, 1), 0, '跨天后 dayTaskPoint 归零');
+    assert.equal(num1(tp, 3), 101, 'chapterIndex 从存档来');
+    assert.equal(num1(tp, 4), 10001, 'dayGroupIndex 从存档来');
+    const listed = kvList(tp, 2);
+    assert.ok(listed.every(([, v]) => v > 0), '列出来的进度必须 >0: 列一个 0 会把客户端本地算出的进度压没');
+    assert.ok(listed.map(([k]) => k).includes(7000001), 'week:1802 还在 -> 周常"累计登录3天"该列出来');
+    assert.ok(!listed.map(([k]) => k).includes(D_STRENGTH), 'day: 计数被清掉了, 这条日常任务不该再列');
+    const ti = GProto.decodeFields(fld(dec, 48).value);
+    assert.deepEqual(kvList(ti, 1).map(([k]) => k), [MAIN_TASK], '日常那条的已领记录跨天作废, 主线那条要留着');
+    assert.equal(ti.filter((f) => f.field === 2).length, 0, 'passedDayPoints 清空');
+    const after = loadSave().tasks;
+    assert.equal(after.counters['day:1502:13'], undefined, 'day: 计数整片删掉');
+    assert.equal(after.counters['total:1802'], 3, '跨天补一次登录天数(同一天重登不补)');
+    assert.equal(after.counters['day:1802'], 1);
+  } finally { restore(); }
+});
+
+await check('B5 登录包 47/48 + 10005: 两个入口给的是同一份任务状态', async () => {
+  const payloads = await import(`../${DIST}/payloads.js`);
+  const { HANDLERS } = payloads;
+  const restore = useSave(taskSave((s) => {
+    s.tasks.counters = { 'day:1002': 1 };
+    s.tasks.dayTaskPoint = 10;
+    s.tasks.passedTasks = { [D_SEC]: 1700000000 };
+  }));
+  try {
+    const login = GProto.decodeFields(payloads.playerLoginGetInfoS2C());
+    const res = HANDLERS[10005]({ msgId: 10005, packetUUid: 1, proto: Buffer.alloc(0), headerHex: '' });
+    const day = GProto.decodeFields(Buffer.isBuffer(res) ? res : res.body);
+    assert.deepEqual(kvList(GProto.decodeFields(fld(day, 6).value), 2),
+      kvList(GProto.decodeFields(fld(login, 47).value), 2), 'taskProgress 两处必须同源');
+    assert.deepEqual(kvList(GProto.decodeFields(fld(day, 7).value), 1),
+      kvList(GProto.decodeFields(fld(login, 48).value), 1), 'taskInfo 两处必须同源');
+    assert.ok(Number(fld(day, 19).value) > Math.floor(Date.now() / 1000), 'nextDayRefreshTime 是将来那一刻');
+    assert.equal(Number(fld(day, 19).value) % 86400, 4 * 3600 - 8 * 3600 + 86400, '日界点=UTC+8 的 04:00');
+  } finally { restore(); }
 });
 
 // ---------------------------------------------------------------- 5. 工具链

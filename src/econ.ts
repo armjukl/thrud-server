@@ -1,12 +1,15 @@
 // 经济原语: 扣费 / 发奖 / 经验曲线. 语义逐条对齐路 B mockgs_pc.lua (行号写在函数注释上),
 // 但取数一律走 src/tbl.ts 的客户端表, 不自定曲线.
 //
-// 依赖方向: econ -> save/tbl/gacha. **绝不 import payloads.ts** (HANDLERS 在那边, 会成环),
+// 依赖方向: econ -> save/tbl/gacha/tasks. **绝不 import payloads.ts** (HANDLERS 在那边, 会成环),
 // 也**不在这层编 protobuf / 发推送** —— 只改存档并把这些改动记进 Effects, 由 handler 决定推什么.
+// 唯一的例外是任务计数 (1501/1502): 获得与消耗都发生在这里, 让每条 handler 自己记得 +1 迟早漏,
+// 所以直接调 tasks.bumpTask —— tasks 只依赖 save/tbl, 不回头 import econ, 不成环.
 import type { SaveData } from "./save.js";
 import { defaultCharacter, newWeapon } from "./save.js";
 import { all, arr, num, row } from "./tbl.js";
 import { dropAll } from "./gacha.js";
+import { bumpTask, COND } from "./tasks.js";
 import { log } from "./logger.js";
 
 /** ItemTypes_Xls[typeId].type —— 值取自客户端全局表 (d4fed020…:81 ItemType). */
@@ -119,11 +122,13 @@ export function costItem(s: SaveData, id: number, n: number, eff: Effects): bool
     s.player.strength -= n;
     s.player.strengthRealTime = Math.floor(Date.now() / 1000);
     eff.strength = true;
+    bumpTask(s, COND.moneyConsume, n, id);
     return true;
   }
   if (countItem(s, id) < n) return false;
   decWhere(s, id, n);
   eff.items.push(id);
+  bumpTask(s, COND.moneyConsume, n, id);
   return true;
 }
 
@@ -134,6 +139,7 @@ export function addMoney(s: SaveData, id: number, n: number, eff: Effects): void
   const k = String(id);
   s.money[k] = Math.max(0, (s.money[k] ?? 0) + n);
   eff.money.push(id);
+  if (n > 0) bumpTask(s, COND.moneyObtain, n, id);
 }
 
 /**
@@ -179,6 +185,7 @@ export function addItem(s: SaveData, id: number, n: number, eff: Effects): void 
   const k = String(id);
   s.items[k] = (s.items[k] ?? 0) + n;
   eff.items.push(id);
+  bumpTask(s, COND.moneyObtain, n, id);
 }
 
 // ---------------------------------------------------------------- 消耗
