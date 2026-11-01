@@ -34,7 +34,7 @@ gadget 那份 hook 脚本已经 hook 了 `connect()`，顺手把 `127.0.0.1:443`
 
 | 模块 | 包名 | 产物 | 装机大小 | 干什么 |
 |---|---|---|---|---|
-| `:probe` | `com.sld.offline.probe` | `probe/build/outputs/apk/debug/probe-debug.apk` | 18,725,472 B | **路线判生死**：屏上直接写 `process.versions` / `typeof CustomEvent` / dgram 复用结论 / 36 张表展开峰值 RSS / 8 个模块能否 require |
+| `:probe` | `com.sld.offline.probe` | `probe/build/outputs/apk/debug/probe-debug.apk` | 18,725,472 B | **路线判生死**：屏上直接写 `process.versions` / `typeof CustomEvent` / dgram 复用结论 / 36 张表展开峰值 RSS / 8 个模块能否 require。✅ **11-01 真机全绿**（读数在 §7） |
 | `:app` | `com.sld.offline.server` | `app/build/outputs/apk/debug/app-debug.apk` | 18,730,110 B | 正式壳：前台服务跑假服 + WebView 管理页 |
 
 体积几乎全是 `libnode.so`（发布件 62,475,584 B，AGP 的 `stripDebugSymbols` 剥到 49.5 MB，再 deflate 进包）。
@@ -193,6 +193,20 @@ quit/restart，所以"关假服"不是杀进程，而是 `socket.close()` + `ser
 | 3 | 真停真起 | 页面里"停止假服"→ 游戏掉线；"启动假服"→ 重连进得来。掉了又马上回来才算数（不是"关了还在收包"） |
 | 4 | 改存档不重登生效 | 页面把某个角色等级/金币改掉 → 大厅里立刻变（`loadSave()` 每请求重读盘）；日志页能看到刚才那几条 `req/resp msgId=` |
 | 5 | 息屏 5 分钟 | 回来还在大厅、管理页还能开（前台服务 + `WAKE_LOCK` 成不成） |
+
+**第 1 条已过（2026-11-01 真机读数，手机 = 5,616 MB RAM / 可用 1,017 MB）**：
+
+```
+node=v18.20.4  abi=arm64/aarch64  CustomEvent=undefined  EventTarget=function  events=ok@0ms
+dgram=旧socket复用=ERR_SOCKET_DGRAM_NOT_RUNNING 新socket占回同端口=ok @28ms
+tables=36张/25193行/186ms  modules=ok/8  rssMb=228  heapMb=56  sysMb=5616/1017  ok=1  hold=alive
+```
+
+对着判据：`dgram` 那串和离线自检断的字样逐字相同（所以"每次 start 换新 socket"是真机行为不是我这边保守）；
+整表 186 ms（PC 103 ms，阈值 400 ms）；`modules=ok/8` 关掉 `export * as` 那条风险；`hold=alive` 说明
+`node::Start` 常驻成立。**`rssMb=228` 比 PC 上"36 张表全展开天花板 114 MB"高一倍** —— 探针是最坏情况
+（8 个模块全 require + 整表一次展开且都持着），真服是惰性 parse 所以稳态更低；5.6 GB 的机器上不是约束。
+2 GB 那条约束是构建机，不是手机。
 
 失败时先回 §6 第 3 步核 `gadget.log` 那两行，再回 §5 看通知栏是不是"起不来: …"——
 **这两处分别是"客户端没连过来"和"服务端没起来"的分界**，别看现象猜。
