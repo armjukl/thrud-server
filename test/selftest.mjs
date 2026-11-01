@@ -544,6 +544,54 @@ await check('probe: 探针脚本在 node18 上跑出预期读数(CustomEvent/dgr
   }
 });
 
+// Java/C++/CMake/main.js 四处名字必须对上, 而这些错**只在真机上炸**(UnsatisfiedLinkError
+// 或"参数被静默忽略"), Gradle 编译与 npm selftest 都不会报 —— 所以在这里按源码文本核一遍。
+await check('android: 壳的接线(JNI 符号 / loadLibrary 名 / argv 标志 / 清单)对得上', () => {
+  const mangle = (s) => s.replace(/_/g, '_1');
+  const mods = [
+    { java: 'android/app/src/main/java/com/sld/offline/server/NodeBridge.java', cpp: 'android/app/src/main/cpp/native-lib.cpp', cmake: 'android/app/src/main/cpp/CMakeLists.txt', entry: 'android/main.js' },
+    { java: 'android/probe/src/main/java/com/sld/offline/probe/ProbeActivity.java', cpp: 'android/probe/src/main/cpp/node_start.cpp', cmake: 'android/probe/src/main/cpp/CMakeLists.txt', entry: 'android/probe.js' },
+  ];
+  for (const m of mods) {
+    const src = readFile(path.join(ROOT, m.java)).toString('utf8');
+    const cpp = readFile(path.join(ROOT, m.cpp)).toString('utf8');
+    const cmake = readFile(path.join(ROOT, m.cmake)).toString('utf8');
+    const pkg = (src.match(/^package\s+([\w.]+);/m) || [])[1];
+    const cls = path.basename(m.java, '.java');
+    assert.ok(pkg, `${m.java} 要声明 package`);
+    const natives = [...src.matchAll(/native\s+\w+\s+(\w+)\s*\(/g)].map((x) => x[1]);
+    assert.ok(natives.length >= 1, `${m.java} 里该有 native 方法`);
+    for (const fn of natives) {
+      const sym = `Java_${mangle(pkg).replace(/\./g, '_')}_${mangle(cls)}_${mangle(fn)}`;
+      assert.ok(cpp.includes(sym), `${m.cpp} 里找不到 JNI 符号 ${sym}(真机上就是 UnsatisfiedLinkError)`);
+    }
+    const lib = (src.match(/loadLibrary\("([^"]+)"\)/) || [])[1];
+    assert.ok(lib, `${m.java} 要 System.loadLibrary(...)`);
+    assert.ok(new RegExp(`add_library\\(${lib}\\s+SHARED`).test(cmake), `${m.cmake} 的 target 得叫 ${lib}(装载找的是 lib${lib}.so)`);
+
+    // main.js 的 parseArgv 对不认识的 --xxx 是静默忽略: 少一个 --data 就变成"存档铺进代码目录"
+    const entry = readFile(path.join(ROOT, m.entry)).toString('utf8');
+    if (!entry.includes('parseArgv')) continue; // 探针不解析参数, 那条规则只约束真壳
+    const envBlock = (entry.match(/const FLAG_ENV = \{([\s\S]*?)\n\};/) || [])[1] || '';
+    const known = new Set([...envBlock.matchAll(/"?([\w-]+)"?\s*:/g)].map((x) => x[1]));
+    for (const k of ['seed', 'build-code', 'no-start']) known.add(k); // main.js 直接读的三个
+    const given = [...src.matchAll(/"(--[\w-]+)"/g)].map((x) => x[1].slice(2));
+    assert.ok(given.length >= 4, `${m.java} 要显式传 root/data/seed/admin 这类参数`);
+    const unknown = given.filter((f) => !known.has(f));
+    assert.deepEqual(unknown, [], `${m.entry} 认不出的参数会被静默丢掉: ${unknown}`);
+  }
+
+  const mf = readFile(path.join(ROOT, 'android/app/src/main/AndroidManifest.xml')).toString('utf8');
+  for (const p of ['INTERNET', 'WAKE_LOCK', 'FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_SPECIAL_USE', 'POST_NOTIFICATIONS']) {
+    assert.ok(mf.includes(`android.permission.${p}`), `清单少了 ${p}(Android 14 上 specialUse 前台服务没这条起不来)`);
+  }
+  assert.ok(/foregroundServiceType="specialUse"/.test(mf), '服务要声明 foregroundServiceType');
+  assert.ok(/networkSecurityConfig="@xml\/network_security_config"/.test(mf), '明文要由 network_security_config 精确放行');
+  const nsc = readFile(path.join(ROOT, 'android/app/src/main/res/xml/network_security_config.xml')).toString('utf8');
+  assert.match(nsc, /base-config cleartextTrafficPermitted="false"/, '默认不许明文');
+  assert.ok(!nsc.includes('0.0.0.0'), '不许把明文放到整个网面上');
+});
+
 // ---------------------------------------------------------------- 4. HTTP 桩
 await check('HTTP 桩: 服务器列表/版本/登录/公告/未实现端点', async () => {
   const { server } = createHttpServer();
