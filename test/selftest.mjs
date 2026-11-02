@@ -1292,7 +1292,8 @@ await check('proto: 注册表完整 (基线 handler 不掉 / 第一档进度对�
     1201, 1202, 1204, 1205, 1207, 1208, 1209,                            // B2 武装
     3005,                                                                 // B3 通关
     30400, 30401, 30402, 30403, 30404, 30405,                          // B4 挂机
-    3302, 3303, 3308, 3309];                                             // B5 任务 (3304 基线就有, 不在此列)
+    3302, 3303, 3308, 3309,                                              // B5 任务 (3304 基线就有, 不在此列)
+    3301, 3306];                                                        // B6 签到/七日
   const stillMissing = TIER1_NEW.filter((id) => !registered.has(id)).sort((a, b) => a - b);
   const declared = TIER1_NEW.filter((id) => !TIER1_DONE.includes(id)).sort((a, b) => a - b);
   assert.deepEqual(stillMissing, declared,
@@ -2814,6 +2815,182 @@ await check('B5 登录包 47/48 + 10005: 两个入口给的是同一份任务状
       kvList(GProto.decodeFields(fld(login, 48).value), 1), 'taskInfo 两处必须同源');
     assert.ok(Number(fld(day, 19).value) > Math.floor(Date.now() / 1000), 'nextDayRefreshTime 是将来那一刻');
     assert.equal(Number(fld(day, 19).value) % 86400, 4 * 3600 - 8 * 3600 + 86400, '日界点=UTC+8 的 04:00');
+  } finally { restore(); }
+});
+
+// ---------------------------------------------------------------- 4j. B6 签到/七日 (3301/3306/10051 + 登录 43/44/80)
+// 状态在 src/sign.ts, 初心者任务的领奖仍走 tasks.claimTask(Task_Xls 里 missionType=4 那 56 行).
+// 日界/月界都是 04:00(UTC+8) 口径, 只有界点能算不能写死, 所以底档里的 signin.day 用 dayEdgeSec(now).
+const B_FIRST = 400001;    // 初心者第一条: cond 1101, 真值在客户端本地 -> 服务端不拦
+const B_LOGIN = 400004;    // 初心者 cond 1802 累计登录 1 天 -> 后端计数型, 该拦
+const { dayEdgeSec: bEdge } = await import(`../${DIST}/tasks.js`);
+const { gameMonthDay, beginnerTotal } = await import(`../${DIST}/sign.js`);
+const NOW_SEC = Math.floor(Date.now() / 1000);
+const B_EDGE = bEdge(NOW_SEC);
+const B_MONTH_KEY = gameMonthDay(NOW_SEC).key;
+
+const ftReq = (type, taskId) => GProto.concat(GProto.vfield(1, type), ...(taskId ? [GProto.vfield(2, taskId)] : []));
+const signSave = (mut) => {
+  const s = taskSave();
+  s.signin = { month: B_MONTH_KEY, times: 3, day: B_EDGE, lastTime: NOW_SEC };   // 今天已签, 本月第 3 格
+  s.bg = { open: 1700000000, sign: 0, signTime: 0, bingo: [], redDot: false };
+  if (mut) mut(s);
+  return s;
+};
+/** 前 n 条初心者置成"已领"(400001..400056 是连号的). */
+const beginnerDone = (n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [String(400001 + i), 1700000000 + i]));
+
+await check('B6 登录包 43/44/80: 初心者两条一起发, FirstThoughtInfo 四个 required 全带', async () => {
+  const payloads = await import(`../${DIST}/payloads.js`);
+  const restore = useSave(signSave());
+  try {
+    const dec = GProto.decodeFields(payloads.playerLoginGetInfoS2C());
+    assert.ok(fld(dec, 43), 'isFirstThoughtAllOver=43 必须带: 它和 44 只发一条, 客户端点未解锁页签会 nil index 崩');
+    assert.equal(num1(dec, 43), 0, '一条都没领 -> 0');
+    const info = GProto.decodeFields(fld(dec, 44).value);
+    for (const n of [1, 2, 3, 4]) {
+      assert.ok(fld(info, n), `FirstThoughtInfo 的 required ${n} 不能缺(signNumber/redDot/signTimeStamp/openTimeStamp), 缺一个整包解不出来`);
+    }
+    assert.equal(num1(info, 4), 1700000000, 'openTimeStamp 从存档 bg.open 来, 单位秒');
+    assert.ok(num1(info, 4) < NOW_SEC, 'openTimeStamp 得早于现在, 给未来值客户端算出"第 0 天", 面板开着但列表空');
+    assert.equal(num1(info, 2), 0, 'redDot 是 required bool: 关掉也要显式发 0');
+    assert.equal(info.filter((f) => f.field === 5).length, 0, '没领过 bingo 就不该列 signBingoList');
+    const ms = GProto.decodeFields(fld(dec, 80).value);
+    assert.equal(num1(ms, 1), 3, 'monthGetSignRewardTimes 从存档来');
+    assert.equal(num1(ms, 3), 0, '今天已签 -> days 必须 0: 客户端格子序号 = 已签次数 + days, 给 1 会把今天推到后一格');
+    assert.ok(fld(ms, 2), 'lastGetSignRewardTime 缺或给 0 会让面板每次进主城重弹');
+  } finally { restore(); }
+});
+
+await checkHandler('B6 3301 typeId=2: 领一条初心者, taskOverTime 必带(缺了客户端当没完成), 奖走 ShowItem_Push(68)', 3301, {
+  save: signSave(),
+  req: ftReq(2, B_FIRST),
+  push: [[900009, 'ShowItem_Push']],
+  fields: (dec, { res }) => {
+    assert.equal(num1(dec, 1), 2, 'typeId=1 要回显, 客户端据此走 Task 那一支');
+    assert.equal(num1(dec, 4), B_FIRST, 'taskId=4: ChangeBeginTaskDataState 按它把行标成 Finish');
+    assert.ok(fld(dec, 6), 'taskOverTime=6 不能缺: passedTaskIds[missionId] 存的就是它, nil 等于这条没完成');
+    assert.equal(num1(dec, 5), 0, 'isAllOver=5 没全清就是 0');
+    const info = GProto.decodeFields(fld(dec, 3).value);
+    for (const n of [1, 2, 3, 4]) assert.ok(fld(info, n), 'thoughtInfo=3 里四个 required 都得在');
+    assert.equal(num1(taskOfPush(res, 900009), 1), 68, 'comeFrom=ActionEnum.FirstThoughtTask');
+  },
+  after: (s) => {
+    assert.ok(s.tasks.passedTasks[String(B_FIRST)] > 0, '领奖要落盘: 重登靠 taskInfo=48, bingo 门槛也数它');
+    assert.equal(s.bg.sign, 0, 'typeId=2 不该动七日签到计数');
+  },
+});
+
+await checkHandler('B6 3301 typeId=2: 日常任务不许从这条通道领(它走 3302) -> 拒单且不动状态', 3301, {
+  save: signSave(),
+  req: ftReq(2, D_SEC),
+  deny: /不是初心者任务/,
+  after: (s) => assert.deepEqual(s.tasks.passedTasks, {}, '拒单不能写已领记录'),
+});
+
+await check('B6 3301: 后端条件那条(400004 累计登录 1 天)没计数就拦, 领过的再发也拦', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const run = (save) => {
+    const restore = useSave(save);
+    try {
+      return { res: HANDLERS[3301]({ msgId: 3301, packetUUid: 1, proto: ftReq(2, B_LOGIN), headerHex: '' }), after: loadSave() };
+    } finally { restore(); }
+  };
+  const none = run(signSave());
+  assert.match(none.res.deny ?? '', /进度 0\/1/, '一次登录都没记过 -> 就是 0, 不能当"看不见"放行');
+  const done = run(signSave((s) => { s.tasks.passedTasks[String(B_LOGIN)] = 1700000000; }));
+  assert.match(done.res.deny ?? '', /已领过/);
+  assert.equal(done.after.tasks.passedTasks[String(B_LOGIN)], 1700000000, '拒单不能改写完成时间');
+  const ok = run(signSave((s) => { s.tasks.counters['total:1802'] = 1; }));
+  assert.ok(!ok.res.deny, `登录天数记过了该放行, 实际 ${ok.res.deny}`);
+});
+
+await check('B6 3306 SignBingoReward: 门槛是已完成初心者任务数(8..56), 没到拦、到了领并落 bg.bingo', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const run = (save) => {
+    const restore = useSave(save);
+    try {
+      return { res: HANDLERS[3306]({ msgId: 3306, packetUUid: 1, proto: idReq(1), headerHex: '' }), after: loadSave() };
+    } finally { restore(); }
+  };
+  assert.equal(beginnerTotal(), 56, '表里初心者 56 行, 正好是 bingo 顶格(num=56)的门槛');
+  const short = run(signSave((s) => { s.tasks.passedTasks = beginnerDone(7); }));
+  assert.match(short.res.deny ?? '', /已完成初心者任务 7\/8/, '差一条也不能领: 客户端只会把格子置灰, 这里挡的是直接发协议的路子');
+  assert.deepEqual(short.after.bg.bingo, [], '拦下时不能把格子记成已领');
+  const ok = run(signSave((s) => { s.tasks.passedTasks = beginnerDone(8); }));
+  assert.ok(!ok.res.deny, `满 8 条该放行, 实际 ${ok.res.deny}`);
+  assert.deepEqual(GProto.decodeFields(ok.res.body).map((f) => Number(f.value)), [1], 'SignBingoReward_S2C 只有 signId=1');
+  assert.equal(num1(taskOfPush(ok.res, 900009), 1), 88, 'comeFrom=ActionEnum.SignBingo, 奖只靠推送展示');
+  assert.deepEqual(ok.after.bg.bingo, [1], '已领格子随 signBingoList=5 在下次登录的 44 里回去');
+  const again = run(signSave((s) => { s.tasks.passedTasks = beginnerDone(8); s.bg.bingo = [1]; }));
+  assert.match(again.res.deny ?? '', /已领过/);
+});
+
+await check('B6 10051 GetSignReward: 未签才推进并发奖, 已签过照样成包回(面板等回包才让关)', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const run = (save) => {
+    const restore = useSave(save);
+    try {
+      return { res: HANDLERS[10051]({ msgId: 10051, packetUUid: 1, proto: Buffer.alloc(0), headerHex: '' }), after: loadSave() };
+    } finally { restore(); }
+  };
+  const fresh = run(signSave((s) => { s.signin = { month: B_MONTH_KEY, times: 2, day: -1, lastTime: 1 }; }));
+  const dec = GProto.decodeFields(fresh.res.body);
+  assert.equal(num1(dec, 2), 3, 'monthGetSignRewardTimes=2 要推进到 3, 客户端拿它覆盖本地那份次数');
+  assert.ok(num1(dec, 3) >= NOW_SEC - 5, 'lastGetSignRewardTime=3 给现在这一秒: 给 0 或留着没签过的值会每次进主城重弹');
+  assert.equal(num1(taskOfPush(fresh.res, 900009), 1), 54, 'comeFrom=ActionEnum.MonthSign');
+  assert.ok(fresh.after.signin.day === B_EDGE, '签到记的是 04:00 那个界点, 不是自然零点');
+  const again = run(fresh.after);
+  assert.ok(!again.res.deny, '这条不能拒单: 面板打开时 SetCanCloseUI(false), 回包不来就关不掉');
+  assert.equal(num1(GProto.decodeFields(again.res.body), 2), 3, '同一天再发一次不能推进');
+  assert.equal(again.after.signin.times, 3, '也不能把次数写进存档');
+  assert.equal((again.res.extra ?? []).filter(([h]) => h === 900009).length, 0, '没发奖就不该弹"获得物品"');
+});
+
+await check('B6 3301 typeId=1: 七日签到推 bg.sign 且当日不重复; 没见过的 typeId 不拒单, 只回 thoughtInfo', async () => {
+  const { HANDLERS } = await import(`../${DIST}/payloads.js`);
+  const { loadSave } = await import(`../${DIST}/save.js`);
+  const run = (proto, save) => {
+    const restore = useSave(save);
+    try {
+      return { res: HANDLERS[3301]({ msgId: 3301, packetUUid: 1, proto, headerHex: '' }), after: loadSave() };
+    } finally { restore(); }
+  };
+  const one = run(ftReq(1), signSave());
+  assert.equal(one.after.bg.sign, 1, '七日签到天数 +1, 随 signNumber=1 下发');
+  assert.ok(one.after.bg.signTime >= B_EDGE, '记下这一格的时刻, 用来判"今天还签不签"');
+  assert.equal(num1(taskOfPush(one.res, 900009), 1), 55, 'comeFrom=ActionEnum.DaySign');
+  const two = run(ftReq(1), one.after);
+  assert.match(two.res.deny ?? '', /今天已签过/);
+  const three = run(ftReq(3), signSave());
+  assert.ok(!three.res.deny, `typeId=3 不该拒单(这版客户端发不出, 接住是为了好排查): ${three.res.deny}`);
+  const back = GProto.decodeFields(three.res.body);
+  assert.equal(num1(back, 1), 3, 'typeId 回显');
+  assert.equal(num1(GProto.decodeFields(fld(back, 3).value), 1), 0, '没签到就是 signNumber=0: 回的是当前那一份 info');
+  assert.equal((three.res.extra ?? []).length, 0, '没发奖不该带后一包');
+});
+
+await check('B6 月界的口径: 1 号 00:00~04:00 在客户端还是上个月, 登录 80 与 10005 13 同源', async () => {
+  const payloads = await import(`../${DIST}/payloads.js`);
+  const { HANDLERS } = payloads;
+  const { gameMonthDay: gmd, rollMonth, signedToday } = await import(`../${DIST}/sign.js`);
+  const nov1 = Math.floor(Date.UTC(2026, 10, 1) / 1000) - 8 * 3600;    // 2026-11-01 00:00 (UTC+8)
+  assert.deepEqual(gmd(nov1 + 2 * 3600), { key: 24322, month: 10, day: 31 }, '1 号 02:00 还该算 10 月第 31 天(差的就是那 4 小时)');
+  assert.deepEqual(gmd(nov1 + 4 * 3600 + 60), { key: 24323, month: 11, day: 1 }, '04:00 一过才是 11 月第 1 格');
+  const s = signSave((x) => { x.signin = { month: 24322, times: 5, day: -1, lastTime: 1 }; });
+  assert.equal(rollMonth(s, nov1 + 4 * 3600 + 60), true, '跨月要归零');
+  assert.deepEqual(s.signin, { month: 24323, times: 0, day: -1, lastTime: 0 }, '归零后从本月第 1 格重来');
+  assert.equal(rollMonth(s, nov1 + 4 * 3600 + 60), false, '第二次不动状态');
+  assert.equal(signedToday(s, nov1 + 4 * 3600 + 60), false, '刚归零 -> 今天还没签');
+  const restore = useSave(signSave());
+  try {
+    const login = GProto.decodeFields(payloads.playerLoginGetInfoS2C());
+    const res = HANDLERS[10005]({ msgId: 10005, packetUUid: 1, proto: Buffer.alloc(0), headerHex: '' });
+    const day = GProto.decodeFields(Buffer.isBuffer(res) ? res : res.body);
+    assert.deepEqual(fld(day, 13).value, fld(login, 80).value, 'monthSign 两个入口必须同源');
   } finally { restore(); }
 });
 

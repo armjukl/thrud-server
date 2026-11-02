@@ -34,6 +34,10 @@ import {
 } from "./hangup.js";
 import { setSkillLv, skillConsumeId, skillLv, stickMaxLv, upgradeSkill } from "./skills.js";
 import {
+  beginnerAllOver, beginnerDoneCount, beginnerTotal, claimBingo, claimMonthSign, claimSevenSign,
+  firstThoughtInfoBody, FT_SIGN, FT_TASK, isBeginnerTask, rollMonth, signInfoBody,
+} from "./sign.js";
+import {
   bumpTask, bumpTimedLogin, claimBoxes, claimTask, COND, drainTaskPush, nextDayRefresh, nextWeekRefresh,
   rollTasks, taskInfoBody, taskProgressBody,
 } from "./tasks.js";
@@ -160,6 +164,9 @@ export const CMD = {
   BatchSubmitTask: 3308,          // 一键领任务
   GetWeekActivePointReward: 3309, // 领周常活跃宝箱
   TaskProgressPush: 900007,       // 服务端主动推任务进度 (repeated progressTaskIdS=1)
+  // 签到/七日 (B6). 号见 proto/CmdDefine.proto:150,154; 客户端口径见 docs/README-协议清单.md §4.7.
+  FirstThought: 3301,             // 初心者: typeId 1=七日签到 2=领一条初心者任务
+  SignBingoReward: 3306,          // 领 bingo 格 (signId 1..7)
 } as const;
 
 export const CMD_NAME: Record<number, string> = Object.fromEntries(
@@ -497,7 +504,8 @@ export function playerLoginGetInfoS2C(): Buffer {
   const s = loadSave();
   // 登录先过一次日/周界: 跨天/跨周要清计数与已领记录, 顺带按等级重挑日常组.
   const rolled = rollTasks(s, Number(t));
-  if (rolled.day || rolled.week) saveSave(s);
+  const monthly = rollMonth(s, Number(t));   // 月签到另有一个"跨月归零", 口径见 src/sign.ts
+  if (rolled.day || rolled.week || monthly) saveSave(s);
   const sec = s.player.secretary;
   // 看板角色必须在武将列表里(否则 GetHeroDataById 返回 nil), 缺就补一个默认条目.
   const ids = s.characters.map((c) => c.id);
@@ -507,8 +515,13 @@ export function playerLoginGetInfoS2C(): Buffer {
   const weaponSkinInfo = weaponSkinInfoBody(s);
   return pb.concat(
     // monthSign=80 (SignInfo): SignInMonthlyManager.InitData(msg.monthSign) 的唯一数据来源,
-    // 缺它 -> InitData(nil) -> 月签到面板回到"第 1 天", 与 GetSignReward 的回显自相矛盾.
-    pb.bfield(80, signInfoBody()),
+    // 缺它 -> InitData(nil) -> 本月次数归 0, 面板每次进主城都弹且停在"第 1 格".
+    pb.bfield(80, signInfoBody(s, Number(t))),
+    // isFirstThoughtAllOver=43 + firstThoughtInfo=44 (B6): 七日面板的状态源.
+    // 两条**必须同时发**: 只缺 44 时点"未解锁天数"页签会 nil index 崩(拿 openTimeStamp),
+    // 而 44 里少任何一个 required 子字段是整个登录包解不出来(见 src/sign.ts 头注).
+    pb.vfield(43, beginnerAllOver(s)),
+    pb.bfield(44, firstThoughtInfoBody(s)),
     // swearInfo=20 (SwearInfo): 抽卡状态(已抽过的池). 空消息也可, 客户端 SetData({}).
     pb.bfield(20, swearInfoBody(s)),
     // leaderInfo=4 (repeated LeaderInfo): HeroDataManager.Init 直接 #leaderData,
@@ -583,46 +596,10 @@ export function playerLoginGetInfoS2C(): Buffer {
   );
 }
 
-// ---- 月签到 (SignInMonthlyManager / UISignInMonthlyCtrl) ----
-// SignInfo{1=monthGetSignRewardTimes 本月已领天数, 2=lastGetSignRewardTime, 3=days 本次可领的第几天}
-// 客户端凭 days > monthGetSignRewardTimes 判"今天还能签" -> 弹面板. 所以当天已签时必须 days==times,
-// 否则每次进大厅都弹(旧版踩过: 恒回 times+1 -> 每次弹、永远"第 1 天"). 状态落存档, 跨自然月清零.
-const DAY = 86400, TZ8 = 8 * 3600;
-const signDayIdx = (): number => Math.floor((Number(now()) + TZ8) / DAY);
-const signMonthKey = (): number => { const d = new Date(Number(now()) * 1000); return d.getUTCFullYear() * 12 + d.getUTCMonth() + 1; };
-
-// 跨月归零; 返回是否改动了存档(需要回写).
-function signRoll(s: SaveData): boolean {
-  const mk = signMonthKey();
-  if (s.signin.month !== mk) { s.signin = { month: mk, times: 0, day: -1, lastTime: 0 }; return true; }
-  return false;
-}
-
-export function signInfoBody(): Buffer {
-  const s = loadSave();
-  if (signRoll(s)) saveSave(s);
-  const signedToday = s.signin.day === signDayIdx();
-  return pb.concat(
-    pb.vfield(1, s.signin.times),                          // 本月已签天数
-    pb.vfield(2, s.signin.lastTime),                       // 上次签到时间
-    pb.vfield(3, s.signin.times + (signedToday ? 0 : 1)),  // 本次可领第几天(当天已签 = times, 不再弹)
-  );
-}
-
-function getSignRewardS2C(): Buffer {
-  const s = loadSave();
-  let dirty = signRoll(s);
-  const today = signDayIdx();
-  if (s.signin.day !== today) {                            // 一天只签一次, 跨天才推进
-    s.signin.times += 1;
-    s.signin.day = today;
-    s.signin.lastTime = Number(now());
-    dirty = true;
-  }
-  if (dirty) saveSave(s);
-  // GetSignReward_S2C{optional int32 monthGetSignRewardTimes=2; lastGetSignRewardTime=3; Rewards rewards=4}
-  return pb.concat(pb.vfield(2, s.signin.times), pb.vfield(3, s.signin.lastTime), pb.bfield(4, Buffer.alloc(0)));
-}
+// ---- 月签到的登录侧那一份状态 (SignInMonthlyManager / UISignInMonthlyCtrl) ----
+// SignInfo 的拼包与"今天签没签/跨月归零"全在 src/sign.ts: 登录(80) · 跨天刷新(13) · 10051 回包
+// 三处共用同一份口径, 别在这里再算第二套日界. 领奖励那条 handler 在下面的 B6 段(和 3301/3306 一起).
+const TZ8 = 8 * 3600;
 
 // 客户端跨天刷新(10005)后会**重新应用** taskProgress=6 / taskInfo=7 (9f4749…:419), 所以这两条
 // 与登录包同源; 界点一律走 tasks.nextDayRefresh/nextWeekRefresh, 别再按自然零点自己算一份.
@@ -630,14 +607,15 @@ function getNextDayUpdateDataS2C(): Buffer {
   const t = Number(now());
   const s = loadSave();
   const rolled = rollTasks(s, t);
-  if (rolled.day || rolled.week) saveSave(s);
+  const monthly = rollMonth(s, t);
+  if (rolled.day || rolled.week || monthly) saveSave(s);
   const d = new Date(t * 1000);
   const firstNext = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
   return pb.concat(
     pb.bfield(6, taskProgressBody(s)),              // taskProgress
     pb.bfield(7, taskInfoBody(s)),                  // taskInfo
     pb.vfield(12, nextWeekRefresh(t)),                                                        // nextWeekRefreshTime
-    pb.bfield(13, signInfoBody()),                                               // monthSign
+    pb.bfield(13, signInfoBody(s, t)),                                         // monthSign
     pb.vfield(17, Math.floor(firstNext.getTime() / 1000) - TZ8),                 // nextMonthRefreshTime
     pb.vfield(19, nextDayRefresh(t)),                                            // nextDayRefreshTime
   );
@@ -1427,6 +1405,116 @@ function setSpecialTaskProgressS2C(req: GsRequest): GsResult {
   return pb.vfield(1, 0);
 }
 
+// ---- 签到/七日 (B6: 3301 初心者 · 3306 bingo · 10051 月签到) ----
+// 状态与校验在 src/sign.ts(初心者任务的领奖仍复用 tasks.claimTask —— 它就是 Task_Xls 里
+// missionType=4 的那 56 行). comeFrom 取 ActionEnum 的 FirstThoughtTask=68 / SignBingo=88 /
+// MonthSign=54 / DaySign=55, ShowItemPushHandler 对这四个没有专门分支 -> 落通用"获得物品"弹窗.
+const ACTION_BEGIN_TASK = 68, ACTION_SIGN_BINGO = 88, ACTION_MONTH_SIGN = 54, ACTION_DAY_SIGN = 55;
+
+/** FirstThought_S2C 的骨架: typeId + thoughtInfo + isAllOver 恒带, 领到东西才补 rewards/taskId/taskOverTime. */
+function firstThoughtBody(s: SaveData, typeId: number, rewards: RewardItem[], taskId = 0, overTime = 0): Buffer {
+  return pb.concat(
+    pb.vfield(1, typeId),
+    ...(rewards.length ? [pb.bfield(2, rewardsBuf(rewardRows(rewards)))] : []),
+    pb.bfield(3, firstThoughtInfoBody(s)),
+    ...(taskId ? [pb.vfield(4, taskId)] : []),
+    pb.vfield(5, beginnerAllOver(s)),
+    ...(overTime ? [pb.vfield(6, overTime)] : []),
+  );
+}
+
+/**
+ * 3301 FirstThought{required typeId=1, taskId=2} -> FirstThought_S2C{typeId=1, rewards=2,
+ * thoughtInfo=3, taskId=4, isAllOver=5, taskOverTime=6}. BeginnerMsg:108-132 读的是后半截:
+ * isAllOver==1 才 post BeginnerAllFinished, thoughtInfo 整份塞回 UIBeginner7DataMgr, typeId==2 时
+ * TaskDataMgr.ChangeBeginTaskDataState 按 taskId 标 Finish、按 taskOverTime 写 passedTaskIds ——
+ * **taskOverTime 缺了就等于这条没完成**(判据是 ~= nil), 而 rewards=2 它压根不看, 奖靠 ShowItem_Push.
+ */
+function firstThoughtS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const typeId = reqNum(req, 1) ?? 0;
+  const sec = nowSec();
+  if (!typeId) return deny("FirstThought 没带 typeId");
+  if (typeId !== FT_TASK && typeId !== FT_SIGN) {
+    // 这版客户端只会发 1/2(CONST_FirstThoughtType 就两个值, proto 注释里的"3 阅读红点"没有实现).
+    // 不 deny 也不发奖: 回一份 thoughtInfo 让它安静收下, 比面板没反应好排查.
+    log("warn", "sign", `FirstThought 未预期的 typeId=${typeId}`);
+    return { body: firstThoughtBody(s, typeId, []), pushes: [] };
+  }
+  const eff = newEffects();
+  let taskId = 0;
+  let rewards: RewardItem[];
+  if (typeId === FT_TASK) {
+    taskId = reqNum(req, 2) ?? 0;
+    if (!isBeginnerTask(taskId)) return deny(`FirstThought typeId=2 taskId=${taskId} 不是初心者任务(missionType!=4)`);
+    const r = claimTask(s, taskId, sec);
+    if (!r.ok) return deny(`FirstThought ${taskId}: ${r.why}`);
+    rewards = mergeRewards(rewardById(s, r.rewardId, eff));
+  } else {
+    const r = claimSevenSign(s, sec);
+    if (!r.ok) return deny(`FirstThought typeId=1: ${r.why}`);
+    rewards = mergeRewards(r.rewardId ? rewardById(s, r.rewardId, eff) : []);
+  }
+  saveSave(s);
+  log("info", "sign", `FirstThought typeId=${typeId}${taskId ? ` task=${taskId}` : ` 第${s.bg.sign}天`} 发[${rewards.map((x) => `${x.itemId}×${x.count}`).join(",") || "空"}] 已完成初心者=${beginnerDoneCount(s)}/${beginnerTotal()} 全清=${beginnerAllOver(s)}`);
+  return {
+    body: firstThoughtBody(s, typeId, rewards, taskId, taskId ? sec : 0),
+    pushes: [],
+    extra: taskRewardPushes(s, eff, rewards, typeId === FT_TASK ? ACTION_BEGIN_TASK : ACTION_DAY_SIGN),
+    mainInCompleted: true,
+  };
+}
+
+/**
+ * 3306 SignBingoReward{required signId=1} -> SignBingoReward_S2C **只有 signId**.
+ * 客户端 handler 就一行 UIBeginner7DataMgr.ADDSignBingoFinish(msg.signId)(BeginnerMsg:134-142),
+ * 门槛(已完成初心者任务数 >= SignBingo.num, 实测 8..56)它自己也会把格子置灰, 我们挡的是
+ * 绕过界面直接发协议的路子. 已领格子随 signBingoList=5 在下次登录的 44 里回去.
+ */
+function signBingoRewardS2C(req: GsRequest): GsResult {
+  const s = loadSave();
+  const signId = reqNum(req, 1) ?? 0;
+  const r = claimBingo(s, signId);
+  if (!r.ok) return deny(`SignBingoReward ${signId}: ${r.why}`);
+  const eff = newEffects();
+  const rewards = mergeRewards(r.rewardId ? rewardById(s, r.rewardId, eff) : []);
+  saveSave(s);
+  log("info", "sign", `SignBingoReward ${signId} 已完成初心者=${beginnerDoneCount(s)} 已领格子[${s.bg.bingo.join(",")}] 发[${rewards.map((x) => `${x.itemId}×${x.count}`).join(",") || "空"}]`);
+  return {
+    body: pb.vfield(1, signId),
+    pushes: [],
+    extra: taskRewardPushes(s, eff, rewards, ACTION_SIGN_BINGO),
+    mainInCompleted: true,
+  };
+}
+
+/**
+ * 10051 GetSignReward(请求是空包) -> {monthGetSignRewardTimes=2, lastGetSignRewardTime=3, rewards=4}.
+ * SignInMonthlyMsg:56-66 只读 2/3 并拿它们覆盖本地那份次数与"上次签到", 所以**已签过的那天不能推进**;
+ * 但一定要成包回 —— 面板打开时 SetCanCloseUI(false), 回包不来就关不掉(SignInMonthlyCtrl:231),
+ * 这条没有 deny 的余地. lastGetSignRewardTime 给 0 会让它每次进主城重弹, 也不能省.
+ * rewards=4 没人读, 带一份只为抓包对得上; 库存与"获得物品"弹窗走推送.
+ */
+function getSignRewardS2C(): GsResult {
+  const s = loadSave();
+  const sec = nowSec();
+  const r = claimMonthSign(s, sec);
+  const eff = newEffects();
+  const rewards = r.ok ? mergeRewards(r.rewardId ? rewardById(s, r.rewardId, eff) : []) : [];
+  saveSave(s);                       // 即便这条没推进格子, 跨月归零也可能已经动过状态
+  log("info", "sign", `GetSignReward ${r.ok ? `本月第 ${s.signin.times} 格` : r.why} 发[${rewards.map((x) => `${x.itemId}×${x.count}`).join(",") || "空"}]`);
+  return {
+    body: pb.concat(
+      pb.vfield(2, s.signin.times),
+      pb.vfield(3, s.signin.lastTime),
+      ...(rewards.length ? [pb.bfield(4, rewardsBuf(rewardRows(rewards)))] : []),
+    ),
+    pushes: [],
+    extra: taskRewardPushes(s, eff, rewards, ACTION_MONTH_SIGN),
+    mainInCompleted: true,
+  };
+}
+
 // ---- 抽卡 (按池真实掉落 roll) ----
 // 掉落链来自客户端 LotteryInstance_Xls -> Drop_Xls -> DropSet_Xls -> DropGroup_Xls (src/gacha.ts).
 // 每次出货归属该池的真实掉落集(角色池出角色/武器池出武器/材料等), 客户端才会正常展示.
@@ -2093,6 +2181,9 @@ const RAW_HANDLERS: Record<number, GsBuilder> = {
   [CMD.GetActivePointReward]: activePointRewardS2C,
   [CMD.GetWeekActivePointReward]: weekActivePointRewardS2C,
   [CMD.SetSpecialTaskProgress]: setSpecialTaskProgressS2C,
+  // 签到/七日 (B6): 3301 初心者领奖 · 3306 bingo · 10051 月签到(在这条下面原来的位置).
+  [CMD.FirstThought]: firstThoughtS2C,
+  [CMD.SignBingoReward]: signBingoRewardS2C,
   // 以下几种的 S2C 只有 optional/repeated, 空 body 即"新号无数据"; 但仍要**成包**回,
   // 否则客户端派发器收不到这个 msgId, 面板回调永不触发 (签到弹窗关不掉就是这么来的).
   [CMD.GetAllFriendInfo]: () => Buffer.alloc(0),        // GetAllFriendInfo_S2C{repeated ...=1}
