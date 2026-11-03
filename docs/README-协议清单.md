@@ -1,6 +1,6 @@
 # 斯露德（Thrud/sld）假服 · 协议清单
 
-> 最后更新：2026-10-29 ｜ 当前方案 [`README.md`](README.md) ｜ 待修 [`README-待补功能.md`](README-待补功能.md)
+> 最后更新：2026-11-03 ｜ 当前方案 [`README.md`](README.md) ｜ 待修 [`README-待补功能.md`](README-待补功能.md)
 
 客户端与假服共三层：HTTP(S) → UDP/KCP → GS(`/AppInterface` protobuf)。
 全部协议号定义在 [`proto/CmdDefine.proto`](../proto/CmdDefine.proto)（`enum CmdEnum`，640 项）。
@@ -112,15 +112,17 @@ Lua `HttpClientForLua` 先派发 `completedList` 再派发 `replenishList`，且
 | 10005 | GetNextDayUpdateData | ✅ | 跨天/周/月刷新时间 + 月签到 |
 | 10006 | GetRevelationInfoListPage | ✅ 空表 | page=1,next=0 |
 | 10007 | GetWeaponListPage | ✅ | 实例来自 `data/save.json` 的 `weapons[]`，缺的角色当场物化一把默认式仗并**落盘**（`onlyId` 与 `leaderInfo.weaponId` 同源，见 §4.3） |
-| 10051 | GetSignReward | ✅ | 月签到领奖 |
+| 10051 | GetSignReward | ✅ 真发奖 | **B6**：月签到领奖（请求是 `SendEmptyMessage`，不带格子号）。`signin.times` 就是本月已签格数，按 `SignMonth_Xls(param=月, times=第几格)` 取 `fixedRewardID` 真发；回包 `monthGetSignRewardTimes=2`/`lastGetSignRewardTime=3` 客户端会**覆盖本地状态**，`rewards=4` 不读 → 奖励走 `ShowItem_Push{comeFrom=54}`。**永不拒单**（面板 `SetCanCloseUI(false)` 一直等回包）；同一天重发只是回原状，见 §4.7 |
 | 10057 | ChangeSecretary | ✅ | 换看板，落 `data/save.json` |
 | 10073 | ChangeStep | ✅ | 原样回显引导流 |
 | 10076 · 10077 · 10080 | CheckPlayerName · ChangePlayerName · ChangeSex | ✅ | 改名/改性别落 `data/save.json` |
 | 10100 | ClientDataOverLogin | ✅ 空 | |
 | 10102 | GetOpenFunctionData | ✅ | 一次下发全部 conditionSet |
+| 3301 | FirstThought | ✅ 真发奖 | **B6**：七日/初心者二合一（C2S `FirstThought{typeId=1, taskId=2}` 两个字段号；`typeId` 的**值** 1=`CONST_FirstThoughtType.Sign` 七日签到、2=`.Task` 领一条初心者任务）。typeId=2 走 `tasks.claimTask`（初心者就是 `Task.missionType==4` 那 56 行 `400001..400056`，不另建一本"已领"账）；typeId=1 按 `SignActivity_Xls(type=1,times=第几天)` 发。回 `typeId=1`/`thoughtInfo=3`/`isAllOver=5` 恒带，领到任务才补 `taskId=4`+`taskOverTime=6`（**判据是 `~= nil`，漏发等于这条没完成**）；`rewards=2` 客户端不读 → 走 `ShowItem_Push{comeFrom=68/55}`。非 1/2 的 typeId 不拒单，只回一份 `thoughtInfo`（§4.7） |
 | 3302 | GetActivePointReward | ✅ 真发奖 | **B5**：领日常活跃宝箱，按 `TaskDailyActive[dayConditionId==当前日常组].apNum` 比对 `dayTaskPoint`（`econ.rewardById` 真发）→ 格记进 `tasks.passedDayPoints`；回包 `reward=1`（客户端不读）+ **只列本次新领的** `activePointId=2`（客户端把它 `append` 进 `passedDayPoints`，全量重发会重复计入）。一键请求会把所有达标未领的 id 一起发来，逐条判 |
 | 3303 | SubmitTask | ✅ 真发奖 | 单条领任务：先过可见性 + 进度门槛，再 `rewardById(fixedRewardId)` 真发、写 `passedTasks[taskId]=秒`、按 `Task.activityPoint` 累加 `dayTaskPoint`/`weekTaskPoint`；回 `reward=1`（客户端**不读**）/ `dayTaskPoint=2` / `chapterIndex=3` / `overTask=4` / `weekTaskPoint=5`。章节奖也走这条（`claimTask` 判本组全清）。不达标 → 拒单 |
 | 3304 | SetSpecialTaskProgress | ✅ 真计数 | 前端上报型进度（`type=1`/`num=2`）：`type==3000`（定时登录）由我们自己分 40000/40001 两档（上报里不带档位），其余 `bumpTask(s, type, num)` 照报来的次数记。`type=0` → 拒单；其余一律 `errCode=0`（回非 0 会让客户端弹错误框） |
+| 3306 | SignBingoReward | ✅ 真发奖 | **B6**：领七日 bingo 格（`signId` 1..7，`SignBingo_Xls` 门槛 8/16/24/32/40/48/56 条已完成初心者任务，正好对上那 56 行）。回包 **只有 `required signId=1`**，客户端只把它 `ADDSignBingoFinish` 进本地列表，奖靠 `ShowItem_Push{comeFrom=88}`；已领格子随 `signBingoList=5` 在下次登录的 44 里回去。不达标/重复领 → 拒单（§4.7） |
 | 3308 | BatchSubmitTask | ✅ 真发奖 | 一键领取（`type` 1日/2主线/3周/4活动）：逐个走 `claimTask`，**跳掉不达标的**；一条都没领到才拒单。回 `dayTaskPoint=1` / `chapterIndex=2` / `overTask=3`（`repeated ProtoHashInt2Int`，3303 是单个）/ `weekTaskPoint=4`（**与 3303 的 5 同名字不同号**，proto 自检有断言） |
 | 3309 | GetWeekActivePointReward | ✅ 真发奖 | 周活跃宝箱，同 3302 但取 `TaskDailyActive` 里 `dayConditionId==0` 的那五格（id 26..30）、门槛是 `weekTaskPoint`、格记进 `tasks.passedWeekPoints`；`GetWeekActivePointReward_S2C` **只有 `id=1`、没有 rewards** → 奖励必须另走 `ShowItem_Push`（§4.6） |
 | 900007 | TaskProgressPush | 推送 | 任务进度增量推送（`taskProgress` 同形状）。被动计数（通关、消费、抽卡……）不会有人记得发，所以挂在 `HANDLERS` 出口统一带：`withTaskPush` 包装每条 handler，见 §4.6 |
@@ -381,6 +383,83 @@ GS 帧的拼法留在 `payloads.ts`。口径全从客户端 Lua 反推（`HangUp
 （巡逻 `2608`、周常的 `1609/1621/1626/3102` 那几条玩法未实现、成就/活动那些靠本地
 `TaskTools.GetTaskProgress` 算的我们也一样不发）；`1002`（秘书互动）只能靠客户端发 `3304` 上报，
 我们没法替它点；活动任务（`NormalActivityTask`）那条分支没接；`3304` 的 `errCode` 恒 0。
+
+### 4.7 签到/七日：三份账共用一个 `passedTasks`（2026-11-02，B6）
+
+实现集中在 [`src/sign.ts`](../src/sign.ts)（月签到、七日签到、bingo、初心者那份 `FirstThoughtInfo`），
+[`src/payloads.ts`](../src/payloads.ts) 只拼帧。**初心者的领奖没有另建一本账**：
+`Task_Xls` 里 `missionType==4` 恰好是 `400001..400056` 这 56 行，所以 `3301` 直接复用
+`tasks.claimTask`（进度门槛、`activityPoint`、`fixedRewardId` 一套逻辑与日常/主线完全同源），
+`sign.ts` 只负责"哪些 id 算初心者"与 bingo 门槛。好处是 `3301/3302/3303/3306/3308` 读的都是
+同一份 `tasks.passedTasks`，重登时随登录包 `taskInfo=48` 一起回去，不会出现"这条在 A 账里领过、
+在 B 账里没领"。
+
+六条契约：
+
+- **① 回包里的 `rewards` 全都没人读。** `FirstThought_S2C.rewards=2`、`GetSignReward_S2C.rewards=4`
+  客户端 handler 都不取，`SignBingoReward_S2C` 干脆**只有 `required signId=1`** 一个字段
+  ——发奖一律走 `ShowItem_Push`，`comeFrom` 取 `ActionEnum` 的 `MonthSign=54`/`DaySign=55`/
+  `FirstThoughtTask=68`/`SignBingo=88`；`ShowItemPushHandler` 对这四个没有专门分支，
+  落到通用"获得物品"弹窗（初心者面板那格不会因此变状态，状态靠 `thoughtInfo` 回灌）。
+  同包带推送 ⇒ 主包必须 `mainInCompleted`（§3.1 第 1 条）。
+- **② `taskOverTime=6` 的判据是 `~= nil`。** `TaskDataMgr.ChangeBeginTaskDataState`（`748180cd…:713-726`）
+  按 `taskId` 找到那一行后 `curProgress = conditionNum`、`state = Finish`、`passedTaskIds[taskId] = taskOverTime`
+  ——写进去的就是这个数，而别处判"这条是否已完成"用的是 `~= nil`：不带 `taskOverTime` 等于把
+  `passedTaskIds` 写成 nil，格子停在可领取但下次登录就不再算已完成。所以领成功必须
+  `taskId=4` + `taskOverTime=6` 两个都带。
+- **③ 登录包 `isFirstThoughtAllOver=43` 与 `firstThoughtInfo=44` 要么都发、要么都不发。**
+  初心者面板点某一天格时 `UIBeginnerTaskCtrl:492` 直接调 `GetBeginnerTaskNoticeByDay`，那里
+  `UIBeginner7DataMgr.m_FirstThoughtInfo.openTimeStamp`（`a357c55…:918`）是不判空的：
+  只给 43 不给 44 ⇒ `m_FirstThoughtInfo` 从来没被赋值 ⇒ 当场崩。而 `FirstThoughtInfo` 的 1/2/3/4
+  四个子字段全是 `required`，少编一个整张登录包解不出来。`redDot=2` 是 `required bool`
+  但**代码里没人读过**，纯粹为了成包。
+  `3301` 的每个回包也都带 `thoughtInfo=3`（`GetBeginnerDataHandler` 会把它原样塞回
+  `SetFirstThoughtInfo`；这条函数对 nil 有保护，不带不会崩，但客户端那份状态就此停在上一次）。
+  `openTimeStamp=4` 是**秒**且必须在过去 —— `GetBeginnerTaskCurday`（`a357c55…:843-875`）算的是
+  `(GetServerDayRefreshTime() - openTimeStamp)/86400` 取整再 **+1**，而那个"跨天刷新点"是
+  `TimeTools.dayResetTime`，只由登录包 `nextDayRefreshTime=96` 和 `10005` 的 19 喂（我们给的是
+  `tasks.nextDayRefresh` = 下一个 04:00 界点），所以这一格的面板天数间接依赖那两个字段；
+  `now < openTimeStamp` 直接回 0，给未来值整个初心者面板停在第 0 天；
+  存档里 `bg.open <= 0` 时按注册时间兜底（`src/save.ts`）。
+- **④ `SignInfo.days=3` 是"待领格子数(0/1)"，不是"第几天"。** 客户端
+  `todayIndex = GetSignedCount() + GetCanSignCount()`（`UISignInMonthlyCell:46`）：已签 N 格时
+  要它停在第 N+1 格，只能给 0/1。给成"本月第几天"会把高亮推到月外。
+  自动重弹的判据是 `lastGetSignRewardTime <= 0 or CheckIsNextDay(last_time, now)`，
+  所以 **`lastTime` 不能给 0**（每进一次主城弹一次），也不能给未来值。
+- **⑤ `10051` 不能拒单。** 面板打开就 `SetCanCloseUI(false)`（`UISignInMonthlyCtrl:232`），
+  等不到回包关不掉。已签过的那天照回原状（`times`/`lastTime` 不推进），只是不再发奖。
+  回包的 2/3 会**覆盖客户端本地那份次数与上次签到时间**，所以这条回的一定要是服务端的事实。
+- **⑥ bingo 门槛是已完成初心者任务条数。** `UIBeginner7DataMgr.SetTaskState`（`a357c55…:143-162`）
+  按 `GetHaveFinishTasknum() >= SignBingo.num` 把格子置 `CanOpen`/`NotFinish`，
+  `num` 实测 8/16/24/32/40/48/56，而 `SignBingo` 表只有 7 行、`num` 上限正好是那 56 行 ——
+  格子 7 只能在全清后领。客户端自己也会把不够数的格子置灰，我们这道 `claimBingo` 拦的是
+  绕过界面直接发协议的路径。`Finish` 态来自 `overTask`（登录 `taskInfo=48`，`748180cd…:85,172-176`）
+  与 `3301` 回包，两边写的都是同一份 `passedTaskIds`，跨重登对得上。
+
+日/月界一律走 `tasks.dayEdgeSec`（**04:00 UTC+8**，与 §4.6 同源），不再自己算：
+`signin.day` 存的是**界点秒**而不是自然日序号，`gameMonthDay()` 也从它推月份，
+`SignMonth_Xls` 的 `id` 是全年连号（1..366），所以按 `param*100 + times`（`param=月`）自建索引取
+`fixedRewardID`。11 月是 `param=11, times=1..30` → `800000..`。跨月由 `rollMonth()` 归零
+`{month, times, day, lastTime}`，登录 `10002` 与 `10005` 都先过它，两处发的 `signInfoBody` 字节必须相同
+（自测有断言）。
+
+这一档顺手修掉三个先前留下的错：`days` 语义（原写死成"本月第几天"）、日/月界点（原来用 UTC+8
+自然零点与 UTC 月首，跨 00:00–04:00 会多签一天或提前换月）、`10051` 只回空 `rewards` **一件不发**。
+
+**B6 有意没做的事**：`3307 ChangeFirstThought` 没接（`BeginnerMsg.ChangeFirstThoughtHandler`
+只调 `SetFirstThoughtInfo`，不 post 任何刷新事件，改了界面也看不见，白费一条帧）；
+`Task.timeUnlock`（1..7）**不做服务端门槛**——七日第 N 天的格子由客户端按 `openTimeStamp`
+自己算（`GetBeginnerTaskCurday`），与 §4.6 对 `TaskTools.GetTaskProgress` 那类本地真值的处置一致；
+`typeId=1` 那条七日签到路径其实**够不到**：唯一活调用点是 `UIBeginner7DaysSignCtrl:OnEnable`
+（`4acd27e1…:126`，还要 `IsPopupBeginnerSign()` 为真才发），而它所在的 `UIBeginner7Days` 面板
+**不是独立 UI**——它是 `UIBeginner7DaysCtrl:InitTab` 挂进来的一个 tab（`8e1a7b52…:115`，同处的
+task tab 被注掉了），`UIManager.OpenUI(UIName.UIBeginner7Days)` 全树只有 `AutoPopupBeginnerSign`
+里那一处（`a357c55…:1154-1158`），而这条函数唯一的调用点 `28e9e9b0…:1900` 是注释；`1de8f2e4…:24`
+只是把它列进主城"弹窗是否结束"的表里，不开界面。
+（玩家真能点开的是**另一个**面板 `UIBeginnerTask`：主城"新手任务"按钮
+`28e9e9b0…:138-141`/`:550` → `UIBeginnerTaskCtrl`（`eac90bf8…`），bingo 格与天数格在那儿，
+③ 说的崩也崩在这儿 —— 别把两者混成一个。）
+服务端仍然把 `typeId=1` 实现完整并接了自测：协议号留着，界面回来就无需动服务端。
 
 ### 怎么加一个协议
 

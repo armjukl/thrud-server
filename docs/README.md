@@ -1,6 +1,6 @@
 # 斯露德（Thrud / sld）离线假服务端 · 当前方案
 
-> **最后更新：2026-10-31** ｜ 老文档（含 PROJECT-LOG、frida 进展、1.0.6 静态分析）见 [`docs/old/`](old/)
+> **最后更新：2026-11-03**（B6 签到/七日 `e6d0944`，第一档 28 条齐）｜ 老文档（含 PROJECT-LOG、frida 进展、1.0.6 静态分析）见 [`docs/old/`](old/)
 
 本文只写**现在真正在用**的口径。历史推演过程不在这里，去 `docs/old/PROJECT-LOG.md`（已归档，结论可能过时）。
 
@@ -25,8 +25,9 @@
 | 通关结算 / 统御等级 | ✅ B3（2026-11-01）：`3005 OverTrainLevel` 新接 + `3004 OverMainLevel` 重构，胜利按 `userExpReward` 发导师经验、沿 `PlayerGrow` 滚级、推 `playerChangeExpandLvl`（升级那笔体力同包 `changeStrength`），星级/进本次数落盘；关卡 id 从 `11028` 的战斗上下文取、同 `uniqueId` 不重发经验（见 [协议清单](README-协议清单.md) §4.4）。**真机一轮待跑**；不扣进本体力、不发武将经验与首通三星奖励 |
 | 挂机 / 外派 | ✅ B4（2026-11-01）：`30400..30405` 六条全接，新建 `src/hangup.ts` 会话状态机 —— 开场按场次一次扣满感知、`endTime = now + 场次×单场秒`、到点由 `30400` 翻 `state 1→2`、领奖按场次真 roll 掉落 + 发导师经验、召回已完成照发 + 未开始返还感知、扫荡当场结清不占会话。三条客户端硬约束（`passTime` 是除数 / 读时翻转 / `settleInfo` 只许空）见 [协议清单](README-协议清单.md) §4.5。**真机一轮待跑** |
 | 任务 / 活跃度 | ✅ B5（2026-11-01）：`3302/3303/3304/3308/3309` 五条 + 推送 `900007`，新建 `src/tasks.ts`（任务集合、三口径计数、04:00 UTC+8 日/周界、领取校验）—— 领奖真发奖并 `ShowItem_Push(1001/1002)`、活跃宝箱按 `TaskDailyActive.apNum` 门槛且回包只带本次新领的格、一键领取逐条判、`3304` 上报真计数；进度走**登录全量 `taskProgress=47` + `900007` 增量**、领奖状态走 `taskInfo=48`（客户端只对它登记过的 `ServerTaskType` 条件用服务端值，见 [协议清单](README-协议清单.md) §4.6）。**真机一轮待跑**；观测不到的条件（巡逻 `2608`、周常 `1609/1621/1626/3102`）不发进度 |
-| 假服地基（对齐路 B） | 🚧 分支 `apk-server`（原 `gs-parity` 已并入）：36 张整表进 `src/data/tbl/` + `tbl.ts` 取数面、`econ.ts`/`skills.ts`/`weapons.ts`/`hangup.ts`/`tasks.ts` 扣费发奖、升级曲线、挂机状态机与任务计数、`save.ts` 原子写 + `.bak` 回退 + 结构迁移，自检 106/106；`HANDLERS` 67 条；第一档余 **B6 签到**（见 [待补功能](README-待补功能.md)） |
-| 手机自服 APK | 🚧 分支 `apk-server`：nodejs-mobile（Node 18.20.4 libnode）内嵌 + 前台服务 + WebView 管理页（开关假服 / 改存档 / 看日志），非 root 绑不了 443 由 gadget 把 sockaddr 端口就地改写 443→9443；离线自检 106/106（ESM 与 CJS 两套产物都跑），**真机验收 5 条里第 1、2 条已过**（探针读数 + 起服登录，[安卓 APK 假服](README-安卓APK假服.md) §7） |
+| 签到 / 七日（月签 · 七日签 · bingo） | ✅ B6（2026-11-02）：`3301/3306` 新接 + `10051` 由骨架改真发，新建 `src/sign.ts`（月签 `signin`、七日 `bg`、bingo、登录那份 `FirstThoughtInfo`）—— 月签按 `SignMonth_Xls(月, 第几格)` 真发、七日按 `SignActivity_Xls` 逐天发、bingo 门槛是已完成初心者任务数（8..56）；**初心者的领奖复用 `src/tasks.ts` 的 `claimTask`**（`Task.missionType==4` 恰好 56 行 `400001..400056`），五条命令读写同一份 `tasks.passedTasks`。登录补 `isFirstThoughtAllOver=43` + `firstThoughtInfo=44`；`rewards` 字段客户端都不读 → 发奖走 `ShowItem_Push(54/55/68/88)`；`10051` **永不拒单**（面板 `SetCanCloseUI(false)` 等回包）。契约见 [协议清单](README-协议清单.md) §4.7。**真机一轮待跑**（初心者面板能不能开不崩是这一档的验收点，见 [待补功能](README-待补功能.md) §1.7） |
+| 假服地基（对齐路 B） | 🚧 分支 `apk-server`（原 `gs-parity` 已并入）：36 张整表进 `src/data/tbl/` + `tbl.ts` 取数面、`econ.ts`/`skills.ts`/`weapons.ts`/`hangup.ts`/`tasks.ts`/`sign.ts` 扣费发奖、升级曲线、挂机状态机与任务计数、`save.ts` 原子写 + `.bak` 回退 + 结构迁移，自检 114/114；`HANDLERS` 69 条；**第一档 28 条已齐**，往下是"真机把每一条打勾"（见 [待补功能](README-待补功能.md)） |
+| 手机自服 APK | 🚧 分支 `apk-server`：nodejs-mobile（Node 18.20.4 libnode）内嵌 + 前台服务 + WebView 管理页（开关假服 / 改存档 / 看日志），非 root 绑不了 443 由 gadget 把 sockaddr 端口就地改写 443→9443；离线自检 114/114（ESM 与 CJS 两套产物都跑），**真机验收 5 条里第 1、2 条已过**（探针读数 + 起服登录，[安卓 APK 假服](README-安卓APK假服.md) §7）。v4 包（buildCode `0.1.0-ge6d0944`）含 B5+B6 |
 
 剩余问题全部是**服务端协议未实现**，不是资源/客户端问题。扣费/经验/曲线这类原语此前在 `src/`
 里一个都没有（旧 41 条 handler 无一条减过库存），现在地基到位、养成已按表扣费，缺的只是把余下命令逐条接上去。
@@ -64,6 +65,7 @@
     │   ├── econ.ts  skills.ts          经济原语（扣费/发奖/经验曲线）/ 技能升级上限
     │   ├── hangup.ts                  挂机/外派会话状态机（只碰存档与表，不碰 GS 帧）
     │   ├── tasks.ts                   任务/活跃度：集合索引、三口径计数、日/周界、领取校验（econ 反向调它）
+    │   ├── sign.ts                    月签到/七日/bingo 状态与登录那份 FirstThoughtInfo（初心者的领奖复用 tasks.ts）
     │   ├── gacha.ts                   按池真实掉落链
     │   ├── gs.ts                      /AppInterface 请求解析 + ReturnPackagePush 组包
     │   ├── http.ts                    SDK/列表/版本 + AppInterface 路由
@@ -212,6 +214,7 @@
 | `weapons.ts` | 武装实例与随机数：`materializeWeapons`（空/撞号发号、按角色补默认式仗，是 `weaponInstances`/`equippedWeaponOf` 的唯一来源）、确定性 `rollWeapon`、17/18 的两种"待确认"编码形状、突破/精炼/洗练的表口径；同样**不 import `payloads.ts`** |
 | `hangup.ts` | 挂机/外派会话状态机：`refreshState` 1→2、`doneTimes` 与客户端同一个 `times - ceil(剩余秒/单场秒)`、开始/加速/领取/召回/扫荡与全部校验；同样**不 import `payloads.ts`** |
 | `tasks.ts` | 任务/活跃度（B5）：`Task_Xls` 按 `condition` 建倒排、三口径计数（`day/week/total`，一次 `bumpTask` 三处同加）、04:00 UTC+8 的日/周界与清零、领取校验（`GATED` 只拦后端真记过数的条件，`1901` 例外）、`taskProgress`/`taskInfo` 两个登录体的编码。**`econ.ts` 反向调它的 `bumpTask`**，所以这里谁都不 import（免环）|
+| `sign.ts` | 签到（B6）：月签（`SignMonth_Xls` 自建 `(月, 第几格)→fixedRewardID` 索引、跨月 `rollMonth`）、七日签（`SignActivity_Xls type=1`）、bingo（门槛 = 已完成初心者任务数 vs `SignBingo.num` 8..56）、`FirstThoughtInfo`/`SignInfo` 两个登录体。**初心者的领奖不在这里**，复用 `tasks.claimTask`（`missionType==4` 那 56 行）；日/月界也从 `tasks.ts` 借（04:00 UTC+8 只此一套）。同样**不 import `econ/payloads`**（免环），把奖励 id 交回调用方发 |
 | `data/conditions.ts` / `data/guides.ts` | 补丁数据：conditionSet 全量下发、强制跳过新手引导 |
 | `data/{lottery,drop,dropset,dropgroup}.ts` / `gacha.ts` | 抽卡按池真实掉落链（客户端表）；`dropAll()` 是"整条必掉就整批发"的口径 |
 | `data/{leader,weapon,rarity,...}.ts` | 自动生成的客户端表（本体 / 品质 1..5 等） |
@@ -221,11 +224,11 @@
 
 | 指标 | 数字 | 阈值 |
 |---|---|---|
-| `npm run typecheck` | 5.73 s，峰值 RSS 364 MB | ≤ 8 s |
-| `npm run build`（`rm -rf dist` 后） | 6.62 s，峰值 RSS 373 MB | ≤ 15 s |
-| `npm run build:cjs`（`rm -rf dist-cjs` 后） | 6.39 s，峰值 RSS 371 MB，产物 14 MB | 同上（安卓那条的产物） |
-| `npm run selftest`（106 条） | 26 s，峰值 RSS 208 MB | — |
-| CJS 产物自检（`SLD_DIST=dist-cjs`，node18） | 同一套 106/106（v18.20.4） | APK 用的就是这份产物 |
+| `npm run typecheck` | 5.30 s，峰值 RSS 357 MB | ≤ 8 s |
+| `npm run build`（`rm -rf dist` 后） | 6.33 s，峰值 RSS 372 MB | ≤ 15 s |
+| `npm run build:cjs`（`rm -rf dist-cjs` 后） | 6.29 s，峰值 RSS 372 MB，产物 14 MB | 同上（安卓那条的产物） |
+| `npm run selftest`（114 条） | 29 s，峰值 RSS 202 MB | — |
+| CJS 产物自检（`SLD_DIST=dist-cjs`，node18） | 同一套 114/114（v18.20.4） | APK 用的就是这份产物 |
 | `src/data/tbl` / `dist` 体积 | 13 MB / 15 MB | — |
 | 36 张表全 parse（25 193 行） | 103 ms | 起服增量 ≤ 400 ms |
 | `payloads.ts` 模块图加载 | 36 ms（惰性 parse，未取到的表不花钱） | — |
@@ -239,6 +242,8 @@ typecheck 这次读到 5.50 s，与上表 5.99 s 同一量级，属噪声，不�
 真实存档（会话时间还挂在墙上），RSS 属预期内，不设阈值。）
 （2026-11-01 B5 后：93→106 条、25→26 s / 215→208 MB。这 13 条要过 `Task_Xls` 那 1421 行建倒排索引，
 但 `tbl.ts` 的行缓存在单进程里只 parse 一次，所以条数涨了 14%、时间只涨 4%。）
+（2026-11-02 B6 后：106→114 条、26→29 s / 208→202 MB。这 8 条里有两条要**按 `Task_Xls` 全表数初心者那 56 行**
+（`beginnerTotal`）并逐条 `claimTask`，还要跨月归零，比 B5 的单条增量贵一些；RSS 那 6 MB 的落差属噪声。）
 
 形状必须是 `const RAW = "<整表 JSON 单行>"` + `JSON.parse`：**类型化字面量在 4.6 MB 单文件上会让 tsc OOM**（161 s 后被杀），
 而 `JSON.parse` 形状 10.58 MB / 32 表只要 1.08 s。单文件超 4 MB 时生成器自动切列存 `{"c":[cols],"r":[[…]]}`（同批小 3.6×），由 `tbl.ts` 展开，业务代码不改。
@@ -264,6 +269,9 @@ typecheck 这次读到 5.50 s，与上表 5.99 s 同一量级，属噪声，不�
 **B5 任务/活跃度（真发奖 + 真计数）**：`3302` GetActivePointReward · `3303` SubmitTask · `3308` BatchSubmitTask ·
 `3309` GetWeekActivePointReward · `3304` SetSpecialTaskProgress（原来是恒 `errCode=0` 的桩）+ 推送 `900007`
 TaskProgressPush（逻辑在 `src/tasks.ts`，客户端契约见 §4.6）·
+**B6 签到/七日（真发奖 + 真计数）**：`3301` FirstThought（`typeId=1` 七日签 / `2` 领一条初心者任务）·
+`3306` SignBingoReward（bingo 1..7）· `10051` GetSignReward（原来是"只回空 rewards"的骨架，现在按
+`SignMonth_Xls` 真发）+ 登录 `43/44/80`（逻辑在 `src/sign.ts`，客户端契约见 §4.7）·
 **空包回**：`890105` BattlePass · `9300009` Rogue · `9400004` ElementRuins
 
 ### HTTP 路由
@@ -327,6 +335,7 @@ fuser -k -n tcp 9443 19005
 | 抽卡结果**弹窗不弹**（无 Lua 报错） | `2000 SwearHero` | ✅ 已修：`ShowItem_Push` 必须走 `PushMsg2Client`(completedList)，走 `replenishList` 会被 `Ignore_Replenish_MsgID` 过滤 |
 | 抽卡**点跳过卡死**、结果页转圈 | `2000 SwearHero` | ✅ 已修：`recordInfo.itemId` 只写本体(角色/律叶)，碎片只进 `Rewards[*].rewardParInfo.par` |
 | 抽到的角色**要重登**才进大厅角色表 | `2000 SwearHero` | ✅ 已修：新角色后置 `Data_Push(900011).leaderAttrChanged` 推送 |
+| 初心者面板（主城"新手任务"→ `UIBeginnerTask`）**一点就崩**（`m_FirstThoughtInfo` 是 nil） | `10002` 的 `isFirstThoughtAllOver=43` + `firstThoughtInfo=44` | ✅ B6 已补：43/44 成对发、四个 required 子字段全编（同档另修了月签：`monthSign=80` 的 `days` 是待领格子数、`lastGetSignRewardTime` 给 0 会每次进主城重弹） |
 
 > 抽卡三条排查详见 [`README-待补功能.md`](README-待补功能.md) §2，回包硬约束见
 > [`README-协议清单.md`](README-协议清单.md) §3；关卡/章节解锁依赖统御等级（`player.level`）。
@@ -336,7 +345,8 @@ fuser -k -n tcp 9443 19005
 **空 repeated 在 protobuf 里等同于「不存在」**，回空包必然触发 nil ——
 要按 `proto/` 里的定义塞至少一条骨架数据，不能靠「空但合法」糊过去。
 
-建议顺序：`GetWeaponListPage` → `GetElementRuinsLevelGroupList` / `GetRogueInfoListPage` → `GetPatrol`；战斗已起步，按真机日志继续迭代。
+建议顺序见 [待补功能 §7](README-待补功能.md)：**第一档 28 条已齐（B6 `e6d0944`）**，眼下排第一的是
+"真机把 B3/B4/B5/B6 一次打完勾"，之后才是 `9400004`/`9300009`/`GetPatrol` 那批骨架数据。
 
 ---
 

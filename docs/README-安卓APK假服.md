@@ -4,7 +4,9 @@
 > [存档修改](README-存档修改.md)（存档落盘位置和 PC 上同一套流程）· [frida 抓包](README-frida抓包.md)
 
 把 `offline-server` 整套塞进一个 APK，跑在手机上：**不需要 PC、不需要 frpc 隧道**。
-手写的那 4,923 行协议字节实现一行没改，上机的是已经在真机跑绿两轮的那份产物，只是多了一层壳。
+协议字节实现一行没改（`src/` 共 9,215 行，其中 [`src/payloads.ts`](../src/payloads.ts) 一份 2,217 行），
+上机的是同一份 `dist-cjs` 产物 —— 但**只有 B1/B2 那部分在真机跑绿过**，v2/v3/v4 依次带上的 B3~B6
+都还欠这一轮（判定点见 [待补功能](README-待补功能.md) §1.1/§1.4/§1.5/§1.7）。
 
 ---
 
@@ -35,7 +37,7 @@ gadget 那份 hook 脚本已经 hook 了 `connect()`，顺手把 `127.0.0.1:443`
 | 模块 | 包名 | 产物 | 装机大小 | 干什么 |
 |---|---|---|---|---|
 | `:probe` | `com.sld.offline.probe` | `probe/build/outputs/apk/debug/probe-debug.apk` | 18,725,472 B | **路线判生死**：屏上直接写 `process.versions` / `typeof CustomEvent` / dgram 复用结论 / 36 张表展开峰值 RSS / 8 个模块能否 require。✅ **11-01 真机全绿**（读数在 §7） |
-| `:app` | `com.sld.offline.server` | `app/build/outputs/apk/debug/app-debug.apk` | 19,842,027 B（v3，B4 后；v2 是 19,841,945 B，82 条自检那版） | 正式壳：前台服务跑假服 + WebView 管理页 |
+| `:app` | `com.sld.offline.server` | `app/build/outputs/apk/debug/app-debug.apk` | 19,842,188 B（v4，B5+B6 后；v3 是 19,842,027 B、v2 是 19,841,945 B） | 正式壳：前台服务跑假服 + WebView 管理页 |
 
 体积几乎全是 `libnode.so`（发布件 62,475,584 B，AGP 的 `stripDebugSymbols` 剥到 49.5 MB，再 deflate 进包）。
 装机用的落在 **`/home/sld/apkbuild/`**，一份一代、按 `-vN` 编号（不许覆盖旧的，见 §2.1）：
@@ -46,6 +48,7 @@ gadget 那份 hook 脚本已经 hook 了 `connect()`，顺手把 `127.0.0.1:443`
 | `sld-offline-server-v1.apk` | `aa940f9ae062…` | 壳 + `buildCode 0.1.0-ge41e93f`（B2 后的假服，真机验收第 2 条就是它） |
 | `sld-offline-server-v2.apk` | `d56fd2bfb904…` | 壳 + `buildCode 0.1.0-g20902ab`（**B3 通关结算**：通关发导师经验、统御等级自然涨、推 `playerChangeExpandLvl`） |
 | `sld-offline-server-v3.apk` | `11b477ec5623…` | 壳 + `buildCode 0.1.0-gd9aff6f`（**B4 挂机六条**：外派会话真落盘、到点翻状态、领奖真 roll；顺手修 3004"认不出关卡还回 result=1"的崩点） |
+| `sld-offline-server-v4.apk` | `b88206362671…` | 壳 + `buildCode 0.1.0-ge6d0944`（**B5 任务五条 + B6 签到三条**：`src/tasks.ts`/`src/sign.ts` 两份新逻辑都在里面，含 `10051` 真发奖与登录 `43/44`。这一版是给"攒着的真机轮"用的：一轮覆盖 B3~B6 四档） |
 
 同目录还有 `gadget-local/` 与 `gadget-tunnel/` 两份就绪 hook 脚本（按设备上的文件名叫，见 §6）。
 `res/apk/` 只放游戏包，别混（AGENTS.md 那条"APK 不碰、不重签"说的是游戏 APK，我们的产物也不该去蹭它）。
@@ -104,9 +107,9 @@ node tools/pack_nodejs.mjs --check                   # 只核产物树, 不重�
 node tools/pack_nodejs.mjs                           # -> assets/{code,seed}
 GRADLE_USER_HOME=/home/tmp/gradle-home /home/tmp/gradle/gradle-8.7/bin/gradle \
   --no-daemon -p android :app:assembleDebug
-cp android/app/build/outputs/apk/debug/app-debug.apk /home/sld/apkbuild/sld-offline-server-v2.apk
+cp android/app/build/outputs/apk/debug/app-debug.apk /home/sld/apkbuild/sld-offline-server-v5.apk   # 号往下走, 别覆盖装机的那份
 md5sum /home/sld/apkbuild/*.apk                      # 装机时报哪个包, 靠这个对
-unzip -l /home/sld/apkbuild/sld-offline-server-v2.apk "assets/code/*" \
+unzip -l /home/sld/apkbuild/sld-offline-server-v5.apk "assets/code/*" \
   | grep -o "^assets/code/[^/]*" | sort -u           # 包里只该有 manifest.json + 当前 buildCode
 ```
 
@@ -160,7 +163,7 @@ quit/restart，所以"关假服"不是杀进程，而是 `socket.close()` + `ser
 
 ## 4. 离线闸门（这台机器没有 adb，所以能离线判的先离线判）
 
-`npm run selftest` 现在 **106/106**（CJS 产物那份同样 106/106，见 §10）。APK 这条路上新增的闸门（另有启停三轮、
+`npm run selftest` 现在 **114/114**（CJS 产物那份同样 114/114，见 §10）。APK 这条路上新增的闸门（另有启停三轮、
 seed 不覆盖已有存档、管理面写档安全与 token，都在同一次自检里）：
 
 | 自检 | 判的是什么 |
@@ -279,13 +282,13 @@ tables=36张/25193行/186ms  modules=ok/8  rssMb=228  heapMb=56  sysMb=5616/1017
 
 ## 10. 迭代线：以后都在 `apk-server` 上改
 
-本文档所属的 APK 路线与 B 组（假 GS 对齐）**共用一条线**，就是 `apk-server`。理由与现状（`git rev-list --count` 实测，2026-11-01）：
+本文档所属的 APK 路线与 B 组（假 GS 对齐）**共用一条线**，就是 `apk-server`。理由与现状（`git rev-list --count` 实测，2026-11-03）：
 
 | 分支 | HEAD | 与 `apk-server` 的关系 |
 |---|---|---|
-| `apk-server` | `5bc2c64` | **迭代线**：APK 步0-7 与 B 组各档都在这条上 |
+| `apk-server` | `e6d0944` | **迭代线**：APK 步0-7 与 B 组各档（B1~B6，第一档 28 条齐）都在这条上 |
 | `gs-parity` | `92864f5` | 已**整条并入**（`merge-base --is-ancestor` 为真），不再往上提交 |
-| `master` | `381b037` | 也是严格祖先，落后 34 个提交；B 组之前的老基线，只作历史参照 |
+| `master` | `381b037` | 也是严格祖先，落后 **43** 个提交；B 组之前的老基线，只作历史参照 |
 | `channel-1428` | `9a2bb22` | **未并入、也没废弃** —— 1 个提交（渠道包 1428 一套 + `SLD_NOW` 时间仿真 + `data/save.nearme.json` + `tools/convert_save.py`），改了 `config.ts/save.ts/payloads.ts/http.ts/selftest.mjs`，其中 `src/data/tables.ts` 那部分已被 A2 的整表管线取代。**要不要 cherry 进来是个未决问题**，动它之前先想清楚冲突面 |
 
 日常顺序照本文 §2.1：改 `src/` → `typecheck` + `selftest`（ESM 产物）

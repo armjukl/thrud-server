@@ -1,6 +1,6 @@
 # 斯露德假服 · 待补功能
 
-> 最后更新：2026-11-01 ｜ 协议现状 [`README-协议清单.md`](README-协议清单.md) ｜ 当前方案 [`README.md`](README.md)
+> 最后更新：2026-11-03 ｜ 协议现状 [`README-协议清单.md`](README-协议清单.md) ｜ 当前方案 [`README.md`](README.md)
 
 ---
 
@@ -24,7 +24,7 @@
   升级按 `addPower` 实发 —— `econ.addStrength` 不钳上限，`catchUpStrength` 只按 `Common 10042`
   的周期把体力往上限补、**只补不削**），
   要复现"从零自然解锁"得换个新档一路通关。
-- **真机一轮还没跑**（自检 106/106 修的是"包对不对 + 落盘对不对"，测不到"顶栏等级跳不跳"）。
+- **真机一轮还没跑**（自检 114/114 修的是"包对不对 + 落盘对不对"，测不到"顶栏等级跳不跳"）。
 
 ### 1.2 养成九条（`1001/1002/1003/1004/1005/1008/1010/1011/1016`）—— 已做（2026-10-28，分支 `gs-parity` · B1）
 
@@ -95,6 +95,40 @@
 - 默认属性按 `level/breach + 武器` 用客户端 `Attribute/GrowAttribute/LeaderBreak/WeaponBreak` 表算（[`src/attrs.ts`](../src/attrs.ts)）；
   武装侧按客户端注释的公式分段累计（各突 `growAttributeID` × 本突那几级 + 各突 `growAddAttributeID`），
   `heroPower` 吃的是角色**成长后**属性与穿戴武装的**真实等级/突破**。仍未计入**星级战力**、未叠加**属性百分比**。
+
+### 1.7 签到 / 七日三条（`3301/3306` + `10051`）—— 已做（2026-11-02，分支 `apk-server` · B6）
+
+- 新建 [`src/sign.ts`](../src/sign.ts)：月签到（`signin`）、七日签到（`bg`）、bingo 格子、登录那份
+  `FirstThoughtInfo`。**初心者的领奖不在这里** —— `Task_Xls` 的 `missionType==4` 那 56 行（`400001..400056`）
+  直接复用 B5 的 `tasks.claimTask`，`3301/3302/3303/3306/3308` 从此读写同一份 `tasks.passedTasks`。
+- 登录包补 `isFirstThoughtAllOver=43` + `firstThoughtInfo=44`（缺 44 一点初心者面板的格子就崩，
+  不是"面板空着"）；`monthSign=80` 与 `10005` 的 13 走同一个 `signInfoBody`（有断言绑一起）。
+- 顺带修掉三个老错：`SignInfo.days=3` 是**待领格子数(0/1)**（原来发的是"本月第几天"，高亮会被推到月外）、
+  日/月界点统一走 `tasks.dayEdgeSec`（**04:00 UTC+8**；原来用自然零点与 UTC 月首，跨 00:00–04:00 会多签一天
+  或提前换月）、`10051` 以前只回一个空 `rewards` **一件不发**（现在按 `SignMonth_Xls(月, 第几格)` 真发）。
+- 客户端契约（`rewards` 没人读、`taskOverTime` 判 `~= nil`、`10051` 永不拒单、bingo 门槛 8..56、
+  `comeFrom` 54/55/68/88）全在 [协议清单 §4.7](README-协议清单.md)。
+- **真机判定点（还没跑）**：
+  ① 主城的**月签到面板能打开且自动弹出过一次**（`lastGetSignRewardTime` 给 0 会每进一次主城重弹，
+  给未来值则永不弹 —— 两种都是这档最容易犯的错，真机只看一次）；
+  ② 点"签到"格子弹"获得物品"窗、高亮停在**第 N+1 格**（N=本月已签格数），同一天再点**不涨数**；
+  ③ 重登后面板仍停在同一格、次数不清零（`signin.day` 是 04:00 界点秒，跨 00:00–04:00 不该翻）；
+  ④ **初心者面板（主城"新手任务"按钮 → `UIBeginnerTask`）能开不崩** —— 这条是 B6 的真验收点，
+  因为以前 44 根本没发，`UIBeginnerTaskCtrl` 一读 `m_FirstThoughtInfo` 就炸；入口还有道功能锁
+  （`FUNCTIONNAME.Beginner_Task = 292`，`28e9e9b0…:138-141`），锁没开就是"点了没反应"而不是崩；
+  ⑤ 领一条七日任务（`3301` `typeId=2`）弹"获得物品"（`comeFrom=68`）、格子变已领、**重登后还是已领**；
+  ⑥ 不达标的那条点了没反应（`deny`，例如"登录 1 天"还没记数时领 `400004`），不弹假窗；
+  ⑦ bingo：完成数不到 `SignBingo.num` 时格子置灰且发协议被拒；够了以后点开弹"获得物品"
+  （`comeFrom=88`），已翻的格子重登后还在（`signBingoList=5`）；
+  ⑧ 56 条全清后回包的 `isAllOver=1` → 客户端 post `BeginnerAllFinished`（`294a645…:112-114`，
+  判的是 `== 1`，所以这条得发整数）。**界面侧没有可见效果**：唯一的监听者在 `28e9e9b0…:325` 被注掉了，
+  真机只能从日志确认。现档不可能走到，要验就手改 `tasks.passedTasks` 铺 56 条。
+- **有意没做**：`3307 ChangeFirstThought` 不接（handler 只 `SetFirstThoughtInfo`，不刷界面）；
+  `Task.timeUnlock`（1..7）不做服务端门槛（第几天由客户端按 `openTimeStamp` 算）；`bg.redDot` 是
+  `required bool` 但客户端没人读，恒发存档值；`typeId=1` 那条七日签到对应的面板在客户端**打不开**
+  （`UIBeginner7Days` 只是 `UIBeginner7DaysCtrl:InitTab` 里的一个 tab，其唯一 opener
+  `AutoPopupBeginnerSign` 的调用点 `28e9e9b0…:1900` 被注掉了，服务端仍实现完整并接了自测；
+  它与 ④ 那个能开的 `UIBeginnerTask` 是两个面板）。
 
 ---
 
@@ -195,7 +229,8 @@
 ## 6. 存档 / 全解锁相关
 
 - 存档 [`data/save.json`](../data/save.json) 一份包含：`characters[]`（含 `attrs` 覆盖 / `breach`）、`weapons[]`、
-  `items`、`money`、`cloths`、`wskin`、`levels`、`trainLevels`、`gacha`、`signin`、`player`。
+  `items`、`money`、`cloths`、`wskin`、`levels`、`trainLevels`、`gacha`、`signin`（月签到）、`bg`（七日/初心者）、
+  `tasks`（B5 起的任务计数与已领记录）、`hangUp`（B4 的挂机会话）、`player`。
   字段含义见 [`README-存档修改.md`](README-存档修改.md)。
 - **当前存档为了调试抽卡已精简**：角色只留 `2001001` + 看板、`weapons` 清空、`items` 只剩门票 `1000001`、`money` 空。
   想要"全角色/全武器/全物品"用 git 历史或按 `src/data/*` 自行铺。
@@ -209,12 +244,13 @@
 ## 7. 建议顺序
 
 0. **对齐路 B 假 GS**（迭代线已从 `gs-parity` 换到 **`apk-server`**；地基 + B1 养成 + B2 武装 + B3 通关 +
-   B4 挂机 + **B5 任务**已做）—— 第一档余 **B6 签到**。
+   B4 挂机 + B5 任务 + **B6 签到**已做）—— **第一档 28 条到此齐了**，不再往下堆新档。
    ⚠ 原计划"每档全绿 + 一轮真机才开下一档"在 B5/B6 这段**由用户明确豁免**（"先写完我再测"），
-   所以 B3/B4/B5 是攒着一起测的；B6 完事后一次性跑完，别再往下堆。
+   所以 B3/B4/B5/B6 是攒着一起测的；**下一件事就是这一轮真机**，判定点按档列在
+   §1.1（B3）/§1.4（B4）/§1.5（B5）/§1.7（B6）。
    ⚠ 现在真机轮不再依赖这台 PC 起服：APK 里就是同一份 `dist-cjs`，界面改档 + 看日志都能自己来
    （[安卓 APK 假服 §2.1](README-安卓APK假服.md) 是重出包流程）。**攒着的真机轮**：B1 的
-   1204/1205/1207/锁定洗练未覆盖 + B3/B4/B5 整条未跑（判定点见 §1.1、§1.4、§1.5）；
+   1204/1205/1207/锁定洗练未覆盖 + B3/B4/B5/B6 整条未跑；
    跑之前按 [存档修改](README-存档修改.md)「给武装 B2 的真机轮备料」补材料。
 1. ~~**通关加经验 / 统御等级成长**（§1.1）~~ —— **已由 B3 解掉**（2026-11-01）
 2. 肉鸽 `9300009` / 元素塔 `9400004` / 乌拉拉 `20001`（补骨架数据）

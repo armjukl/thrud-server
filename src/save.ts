@@ -213,7 +213,7 @@ export interface SaveData {
   trainLevels: Record<string, SaveLevelRecord>;
   /** 抽卡: 卡池id(字符串) -> 已抽总次数. */
   gacha: Record<string, number>;
-  /** 月签到状态: month=年*12+月, times=本月已签天数, day=已签到的"天序号"(4:00 UTC+8 日界), lastTime=上次签到时间. */
+  /** 月签到状态: month=年*12+月, times=本月已签格数, day=已签那天的界点秒(04:00 UTC+8, 见 tasks.dayEdgeSec), lastTime=上次签到时刻. */
   signin: { month: number; times: number; day: number; lastTime: number };
   /** 任务/活跃度 */
   tasks: SaveTasks;

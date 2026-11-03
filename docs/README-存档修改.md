@@ -1,6 +1,6 @@
 # 斯露德假服 · 存档修改
 
-> 最后更新：2026-10-29 ｜ 数据文件都在 [`offline-server/data/`](../data/) ｜ 当前方案 [`README.md`](README.md)
+> 最后更新：2026-11-03 ｜ 数据文件都在 [`offline-server/data/`](../data/) ｜ 当前方案 [`README.md`](README.md)
 
 斯露德没有一份客户端「玩家存档文件」可改：客户端自己维护本地进度，服务器每次登录按收到的请求现算。
 假服里能持久化并被读回的玩家数据，全部集中在**一份** `data/save.json`（可读可写）。读写在
@@ -94,9 +94,9 @@
 | `trainLevels` | 训练本通关：`关卡id→记录`。**老档的 `[100101]` 会自动升上来**（`passTime` 兜 30 秒） | `trainLevelInfo(64)` |
 | `levels[].passTime` / `trainLevels[].passTime` | 单局秒数 —— **挂机把这一列当"单场时长"，而且是客户端拿它做除法**（`math.ceil(剩余秒/单场秒)`），给 0 进度全废。读档经 `safePassTime()` 兜底：0/负/小数一律变 **30 秒**，所以手改档改不出"除零"，但也别指望写 0 能"瞬间挂完" | `TrainLevelInfo` required 8 / `MainLevelInfo` 10 + `HangUpInfo` |
 | `gacha` | 抽卡：`卡池id→已抽次数` | 登录 `swearInfo(20)` |
-| `signin` | 月签到：`month`/`times`/`day`/`lastTime`（当天已签时不再弹面板） | 登录 `monthSign(80)` + `GetSignReward(10051)` |
+| `signin` | 月签到（B6 起是真逻辑）：`month`=**年\*12+月**（与 `gameMonthDay()` 同式，跨月由 `rollMonth` 归零整块）、`times`=**本月已签格数**（也就是 11 月里的第几格，1..30）、`day`=已签那天的**日界点秒**（`tasks.dayEdgeSec`，04:00 UTC+8 —— **口径在 B6 变了**，老档里那个"自然日序号"（如 20700）永远不等于界点秒，后果只是"今天还能再签一次"，不多拿奖、也不会崩）、`lastTime`=上次签到**秒**（给 0 会让月签面板**每次进主城重弹**） | 登录 `monthSign(80)` + `10005` 的 13 + `GetSignReward(10051)`，格子取 `SignMonth_Xls(param=月, times=第几格)` |
 | `tasks` | 任务/活跃度（B5）：`taskChapter` **默认 101**、`dayGroupIndex` **默认 10001**（改档改成表里没有的组/章会被 `rollTasks` 兜回默认值 —— 否则 `UITaskCtrl` 在 `mainTaskData` 里捞不到那条 `condition=1901` 的行，直接崩）；`dayTaskPoint`/`weekTaskPoint` 是当前活跃度点数；`passedTasks`(taskId→**完成时间·秒**，重登靠登录 `taskInfo=48` 认"已领过")；`counters`(**B5 起替代 `progress`，老键读进来直接忽略**) 是后端侧计数，键形如 `<口径>:<条件号>[:<conditionParam1>]`，口径 = `day`/`week`/`total`（跨天清 `day`、跨周清 `week`），条件号见 [`src/tasks.ts`](../src/tasks.ts) 的 `COND`，例：`day:1502:13`=今天消耗了多少点感知、`total:1802`=累计登录天数；`passedDayPoints`/`passedWeekPoints`(已领的活跃度箱 id)；`rollDay`/`rollWeek`(上次跨日/跨周刷新的**ms**锚点) | 登录 `taskProgress=47`+`taskInfo=48` · `10005` · `SubmitTask`/`BatchSubmitTask`/`GetActivePointReward`/`GetWeekActivePointReward` · 推送 `900007` |
-| `bg` | 初心者+七日签到：`open`(**秒**时间戳，活动开启时刻)、`sign`(已签天数)、`signTime`(**秒**，上次签到)、`bingo`(已领的 bingo 行 id)、`redDot`(bool) | `FirstThought_S2C.thoughtInfo` + `SignBingoReward` |
+| `bg` | 初心者+七日签到（B6 起真发登录 `isFirstThoughtAllOver=43` + `firstThoughtInfo=44`）：`open`=活动开启时刻（**秒**，且**必须是过去** —— `GetBeginnerTaskCurday` 拿 `(下一个日界点 - open)/86400` 取整 **+1** 算"第几天"，写成未来值整个初心者面板停在第 0 天；`<= 0` 时读档按 `regTime` 兜底）、`sign`=七日已签天数（满 7 不再涨）、`signTime`(**秒**，上次签到，同日第二次 `3301/typeId=1` 靠它拦)、`bingo`=已翻开的 bingo 格 id（1..7，门槛是"已完成初心者任务条数 ≥ `SignBingo.num`"）、`redDot`(bool，proto required 但客户端没人读，恒发本值)。**初心者的领奖记录在 `tasks.passedTasks` 里**（那 56 行 `400001..400056`），不在这一格 | 登录 `43`/`44` · `FirstThought_S2C.thoughtInfo(3)` · `3306` |
 | `bgVersion` | 结构迁移哨兵（`< BG_SCHEMA` 才补锚点），**手改它只会让迁移再跑一遍**，别当开关用 | — |
 | `hangUp` | 挂机/外派会话：`type`(1=主线 2=训练)/`levelId`/`times`/`startTime`(**秒**)/`endTime`(**秒**)/`state`（`0=没在挂或已领 · 1=挂机中 · 2=完成未领`，`HangUpInfo.state` 是 required **int64**）。**手改这一格就能造一次挂机**：写 `state=1` + `endTime` 在过去 → 下一次 `30400` 翻成 2、红点亮、可领奖；`times` 超过 10 会被 `30401` 的上限拦住（但已写进档的会话不受限） | `GetHangUpInfo(30400)` 一族 |
 | `wSeq` | 武装 `onlyId` 发号器（当前值 +1 拼成号） | — |
@@ -123,7 +123,7 @@
 |---|---|
 | `trainLevels[].lastAttackTime`、`tasks.rollDay/rollWeek` | **毫秒** |
 | `tasks.passedTasks`(任务完成时间，回包 `overTask.value` 也是它) | **秒** |
-| `player.strengthRealTime`（= 协议 `lastStrengthTime`）、`bg.open`、`bg.signTime`、`hangUp.startTime/endTime`、`regTime`、`signin.lastTime` | **秒** |
+| `player.strengthRealTime`（= 协议 `lastStrengthTime`）、`bg.open`、`bg.signTime`、`hangUp.startTime/endTime`、`regTime`、`signin.lastTime`、`signin.day`（**日界点秒**，不是日序号） | **秒** |
 
 `weapons[].recasting*Time` 名字带 Time 但**是次数**（见上表）。日界/周界统一走 [`src/tasks.ts`](../src/tasks.ts)
 里那套 **4:00 UTC+8** 的算法（`dayEdgeSec`/`weekEdgeSec`/`nextDayRefresh`/`nextWeekRefresh`，
@@ -197,6 +197,51 @@
 | `1090001` 式仗经验料 | 强化经验 | 每份 200 经验 |
 
 精炼（1207）**不收任何材料**，但要喂同配置的闲置武装实例当卡 —— 想试它就往 `weapons[]` 里多塞几把同 `cfg` 的。
+
+---
+
+### 例：铺七日/月签到（B6 的真机轮）
+
+签到这一档的判定点都跟"当下是本月第几格、今天是不是已签"绑着，手改档比等自然跨天快得多。
+先算出**今天这一格该填什么**（界点秒与月 key 都从 `dayEdgeSec` 推，别自己按自然零点算；
+下面这两行要在 `npm run build:cjs` 之后跑）：
+
+```bash
+node -e "const t=Math.floor(Date.now()/1000); const {dayEdgeSec}=require('./dist-cjs/tasks.js');
+console.log('edge='+dayEdgeSec(t), JSON.stringify(require('./dist-cjs/sign.js').gameMonthDay(t)))"
+# 例：2026-11-02 上午 → edge=1793563200 {"key":24323,"month":11,"day":2}
+```
+
+往 `data/save.json` 里写（`month` 用上面打出来的 `key`，`day` 用那个 `edge`）：
+
+```json
+{
+  "signin": { "month": 24323, "times": 3, "day": 1793563200, "lastTime": 1793563200 },
+  "bg":     { "open": 1793304000, "sign": 0, "signTime": 0, "bingo": [], "redDot": false }
+}
+```
+
+- `signin.times=3` + `day` 填**今天的界点秒** → 高亮停在第 4 格、点签到不再推进（走"今天已签"那条分支）；
+  `day` 改成昨天的界点秒（`edge-86400`）→ 今天还能再签一次。`lastTime=0` 会让面板**每次进主城重弹**，
+  是判定点①的反例。
+- `bg.open` 必须是**过去**的秒。它离今天几个界点，面板就停在哪一格：客户端算的是
+  `(下一个界点 - open)/86400 + 1`，所以 `open = edge - k×86400` → **第 k+2 格**（上例 k=3 → 第 5 格）；
+  写成未来值则 `GetBeginnerTaskCurday` 直接回 0，初心者面板停第 0 天 —— 这是判定点④的反例。
+- 判定点⑧（`isAllOver=1`）要 56 条全清，一条条点太慢，直接铺：
+
+```bash
+node -e "const fs=require('fs');const p='data/save.json';const s=JSON.parse(fs.readFileSync(p,'utf8'));
+const t=Math.floor(Date.now()/1000);for(let id=400001;id<=400056;id++)s.tasks.passedTasks[String(id)]=t;
+fs.writeFileSync(p,JSON.stringify(s,null,2));console.log('铺完',Object.keys(s.tasks.passedTasks).length)"
+```
+
+  这一步顺带把七格 bingo 的门槛也凑齐了（`GetHaveFinishTasknum()` 数的就是同一份 `passedTasks`），
+  于是 `3306` 的 1..7 全该能领。
+- 这两段都是**直接 `writeFileSync`**，绕过了 `saveSave()` 的 `.tmp → rename`：写完当场核一遍
+  `node -e "JSON.parse(require('fs').readFileSync('data/save.json','utf8'));console.log('ok')"`。
+  半截文件会被 `loadSave()` 回退成 `.bak`（等于白改），所以也别挑客户端正要写盘的那几秒改。
+- 收回原状：动手前先 `cp data/save.json /home/tmp/save-before-b6.json`，要回就 `cp` 回来 ——
+  **别用 `git checkout`**：`data/save.json` 虽然入库，但仓库里那份未必是你现在这套进度。
 
 ---
 

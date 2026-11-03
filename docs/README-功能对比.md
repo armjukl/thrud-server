@@ -1,6 +1,6 @@
 # 斯露德假服 · 与路 B 假 GS 的功能对比 + 现状台账
 
-> 最后更新：2026-11-01 ｜ 分支 `apk-server`（B5 `cdf581a`）｜ 协议细节 [协议清单](README-协议清单.md) ｜ 待办 [待补功能](README-待补功能.md) ｜ 存档 [存档修改](README-存档修改.md)
+> 最后更新：2026-11-03 ｜ 分支 `apk-server`（B6 `e6d0944`，第一档 28 条齐）｜ 协议细节 [协议清单](README-协议清单.md) ｜ 待办 [待补功能](README-待补功能.md) ｜ 存档 [存档修改](README-存档修改.md)
 
 对齐目标是**路 B 的进程内假 GS** [`../../frida-gadget/mockgs_pc.lua`](../../frida-gadget/mockgs_pc.lua)（复刻 PC 纪念版那套）。
 本文只回答三件事：**我们新做了什么**、**跟路 B 比还差什么**、**现在到底算做到哪一步**。
@@ -22,7 +22,7 @@
 | 配置表 | 直接读客户端已加载的 Lua 表 | `tools/gen_tables.py` 把整表搬进 `src/data/tbl/`，`tbl.ts` 统一取数面（行存/列存两种形状在这里展开） |
 | 失败处理 | 不 PostMsg 就行 | 必须回**合法帧**否则客户端 20 s 超时挂 `210001` → 发明 `deny`（`header=0` 空包：请求收尾、遮罩关掉、一条回调都不跑）。见 [协议清单 §4.1](README-协议清单.md) |
 | 载体 | 只在那台被注入的进程里跑 | 手机/PC 客户端都能连，`frpc` 可把 9443 挂公网 443 |
-| 自检 | 33 项构建自检 + 39 条真字节断言（`frida-gadget/`） | `npm run selftest` **106 条**（含 proto required 全覆盖 + 帧级端到端 + 落盘回归；同一套在 CJS 产物 + node18 上再跑一遍 = APK 那份） |
+| 自检 | 33 项构建自检 + 39 条真字节断言（`frida-gadget/`） | `npm run selftest` **114 条**（含 proto required 全覆盖 + 帧级端到端 + 落盘回归；同一套在 CJS 产物 + node18 上再跑一遍 = APK 那份） |
 
 **结论先说**：路 B 是"语义供体"，不是"可以照抄的实现"。B1/B2 的口径全部**回到客户端 Lua 自己算的那套**，
 所以有 §4 那五处"路 B 错、我们对"。
@@ -41,7 +41,7 @@
 | 主线/训练通关**发经验 + 统御等级** | 有 | ✅ **B3** `3004` 重构 + `3005` 新接：按 `MainLevel/TrainLevel.userExpReward` 走 `PlayerGrow` 曲线滚级，推 `playerChangeExpandLvl`；关卡 id 从 `11028` 的战斗上下文取，同 `uniqueId` 只发一次经验。**不扣进本体力**（见 §7） | [核] |
 | 挂机 / 外派（`30400..30405`） | 有（PC 版有托管） | ✅ **B4 六条** `30400 30401 30402 30403 30404 30405`：新建 `src/hangup.ts` 会话状态机，`hangUp` 块真落盘（**秒**）；开场按场次一次扣满感知、到点靠 `30400` 翻 `state 1→2`、领奖/召回按场次真 roll 掉落 + 发导师经验、召回返还未开始场次的感知；单场时长取**玩家记录的 `passTime`**（客户端拿它做除数，口径见 [协议清单 §4.5](README-协议清单.md)） | [待真机] |
 | 任务 / 活跃度（`3302/3303/3304/3308/3309` + `900007`） | 有 | ✅ **B5 五条**：新建 `src/tasks.ts`（任务集合/进度三口径/日周界/领取校验），领奖真发奖 + `ShowItem_Push(1001/1002)`、活跃宝箱按 `TaskDailyActive.apNum` 门槛、一键领取逐条判、`3304` 上报真计数；进度靠**登录全量 `taskProgress=47` + `900007` 增量**，领奖状态靠 `taskInfo=48`。**混合口径**：客户端只对我们登记过的 `ServerTaskType` 条件用服务端值，细节见 [协议清单 §4.6](README-协议清单.md) | [待真机] |
-| 签到 / 七日（`3301`/`3306` + `10051`） | 有 | ⚠ `10051` 与登录 `monthSign` 是骨架（能领、不算真进度），登录 `firstThoughtInfo=44` 还没发（`UIBeginner7DataMgr` 因此起不来），`bg` 七日块已备。**B6** | [未核] |
+| 签到 / 七日（`3301`/`3306` + `10051`） | 有 | ✅ **B6 三条**：新建 `src/sign.ts`（月签 `signin` / 七日 `bg` / bingo）；月签按 `SignMonth_Xls(月, 第几格)` 真发、七日按 `SignActivity_Xls` 逐天发、bingo 门槛是已完成初心者任务数（8..56）。初心者的领奖**复用 `tasks.claimTask`**（`missionType==4` 那 56 行），同一份 `passedTasks`；登录补 `isFirstThoughtAllOver=43` + `firstThoughtInfo=44`，`monthSign=80` 与 `10005` 同源。`10051` 永不 `deny`（面板等回包关不掉），发奖一律 `ShowItem_Push(54/55/68/88)`。契约见 [协议清单 §4.7](README-协议清单.md) | [待真机] |
 | 商店 / 邮件 / 战令 / 活动 | 部分 `[未核]` | ⚠ 一律"合法空包或版本号兜住"：`30300/30304` `21001/21015` `890105` `40002` `60003` `10006`。够进大厅、不够用功能 | [核] |
 | 战斗 | 进程内直接喂 | ⚠ 进→打→结算→退闭环可用（`11028/11003/11018/11019/11031/11032`），**战场内 `12xxx` 实时同步没做** | [核] |
 | 肉鸽 / 元素塔 / 巡逻 | `[未核]` | ❌ 空包（`9300009/9400004/20001`），客户端对应 DataManager 拿 nil | [核] |
@@ -114,22 +114,51 @@
 
 | 项 | 数字 / 状态 |
 |---|---|
-| 分支 / HEAD | **`apk-server`**（安卓 APK 与 B 组共用的迭代线，`gs-parity` 已整条并入；分叉表与"先提交后打包"的理由见 [安卓 APK 假服 §10](README-安卓APK假服.md)）。谱系：地基 `8edea5b` → B1 `a845dfc`+`fb9d5c2` → B2 `5f1ef35` → 属性修复 `92864f5` → APK 步0-7 `5bc2c64` → B3 `20902ab` → B4 `d9aff6f` → **B5 `cdf581a`** |
-| `HANDLERS` 注册 | **67 条**（`node -e "console.log(Object.keys(require('./dist/payloads.js').HANDLERS).length)"`） |
-| 自检 | **106/106 通过**，`npm run selftest` 26 s（峰值 RSS 208 MB；本轮 +13 条：日常/周常/主线三条领取口径、活跃宝箱只回新领的格、一键领逐条判、`900007` 的 `withTaskPush` 出口、`3304` 两档时段分配、章节推进、登录 47/48 与 10005 同源）。CJS 产物同一套：`SLD_DIST=dist-cjs /home/tmp/node18/bin/node test/selftest.mjs` → 106/106（node v18.20.4） |
-| typecheck / build | 5.73 s（364 MB）/ 冷编译 6.62 s（373 MB），阈值 8 s / 15 s |
-| `dist` / `src/data/tbl` 体积 | 15 MB / 13 MB |
-| 第一档进度 | 28 条新命令里 **26 条已接**（B1 8 + B2 7 + B3 1 + B4 6 + B5 4；`1001`/`3004`/`3304` 是重构已有 handler，不在这 28 条里 —— 判据见 `selftest.mjs` 的 `TIER1_DONE`，注册表守卫会拦住"偷偷接了不登记"）；余 **2 条：B6 签到** |
-| **真机验证** | 第一轮已跑（2026-10-31 12:43-13:00，判定点见 [待补功能 §1.3](README-待补功能.md)）：**B1 九条 + B2 的 1201/1202/1208/1209 全绿**，落盘与扣费逐条核对；随机数形状与修正后口径一致（2★ 技0/属1、5★ 技2/属3）。**未覆盖**：1204 分解、1205 上锁、1207 精炼、锁定洗练（`1090102` 没动）。两侧看日志的位置在 [待补功能 §8](README-待补功能.md) |
+| 分支 / HEAD | **`apk-server`**（安卓 APK 与 B 组共用的迭代线，`gs-parity` 已整条并入；分叉表与"先提交后打包"的理由见 [安卓 APK 假服 §10](README-安卓APK假服.md)）。谱系：地基 `8edea5b` → B1 `a845dfc`+`fb9d5c2` → B2 `5f1ef35` → 属性修复 `92864f5` → APK 步0-7 `5bc2c64` → B3 `20902ab` → B4 `d9aff6f` → B5 `cdf581a` → **B6 `e6d0944`** |
+| `HANDLERS` 注册 | **69 条**（`node -e "console.log(Object.keys(require('./dist/payloads.js').HANDLERS).length)"`） |
+| 自检 | **114/114 通过**，`npm run selftest` 29 s（峰值 RSS 202 MB；本轮 +8 条：登录 43/44/80 齐发与四个 required 子字段、`days` 在已签时=0、`3301` 两种 typeId 的成功/拒单/落盘/comeFrom、`3306` 三门（门槛/成功/重复）、`10051` 推进与同日重发、月界单测与 `rollMonth` 幂等、登录 80 与 10005 的 13 字节相同）。CJS 产物同一套：`SLD_DIST=dist-cjs /home/tmp/node18/bin/node test/selftest.mjs` → 114/114（node v18.20.4） |
+| typecheck / build | 5.30 s（357 MB）/ 冷编译 6.33 s（372 MB），`build:cjs` 6.29 s；阈值 8 s / 15 s |
+| `dist` / `dist-cjs` / `src/data/tbl` 体积 | 15 MB / 14 MB / 13 MB |
+| 第一档进度 | 28 条新命令**全部接完**（B1 8 + B2 7 + B3 1 + B4 6 + B5 4 + B6 2；`1001`/`3004`/`3304` 是重构已有 handler，不在这 28 条里 —— 判据见 `selftest.mjs` 的 `TIER1_DONE`，注册表守卫会拦住"偷偷接了不登记"）。**第一档之后是"真机把每一条打勾"**，不是新一档 |
+| **真机验证** | 第一轮已跑（2026-10-31 12:43-13:00，判定点见 [待补功能 §1.3](README-待补功能.md)）：**B1 九条 + B2 的 1201/1202/1208/1209 全绿**，落盘与扣费逐条核对；随机数形状与修正后口径一致（2★ 技0/属1、5★ 技2/属3）。**未覆盖**：1204 分解、1205 上锁、1207 精炼、锁定洗练（`1090102` 没动）。**B3/B4/B5/B6 四档都还没跑真机**（用户 2026-11-01 的话是"先写晚我再测"，据此免掉了自定的"每档一轮真机才开下一档"，见 [待补功能 §7](README-待补功能.md)）；v4 APK（`0.1.0-ge6d0944`）已把 B5+B6 一起铺进去，一轮就能覆盖四档。两侧看日志的位置在 [待补功能 §8](README-待补功能.md) |
 | 真机反馈的三个缺陷 | ① **武装/角色面板暴击率(201)、暴击伤害(200) 恒为 0** —— `attrs.ts` 把这两列跟 hp/atk 一起 `Math.floor(v+0.5)`，而表里它们是小数（0.02=2%、0.4=40%），542 行里非零的这两列没有一行是整数 → 百分比属性只清浮点尾差不取整。② **满级点具相卡住、升不了技能** —— `LeaderInfo.activeSkills(17)` 按战斗侧的 type 1/2/3 移位发，且第 1 格塞的是**武器射击技能**（`SkillValue` 只有 1 级、`consumeId=0`）：客户端 `GetActiveSkill(1)` 拿到错 id → 下一级配置取不到 → 潜能觉醒按钮不出现（真机日志里确实一条 `1008` 都没进来），红点判据又拿 `consumeId=0` 去 index `Consume` 表 → 报错卡面板。养成侧只该发 `{type=1,id=activeSkillId}` + `{type=2,id=jizouSkillGroup}`（普攻由客户端从 `talentSkills` 挑 `commonSkillId[1]`），战斗侧 `LeaderBattleInfo.activeSkills=12` 的另一套口径保持不动。③ **武器升级/突破后面板属性与总战力不动** —— `weaponAttr` 只按"当前突破的成长行 ×(等级-1)"算，既没分段（每突的成长行不同：5★ 攻 9.26→9.35→10.45/级），也**完全没读 `growAddAttributeID`**，突破白送的那一坨（突1 +114 攻 / +2% 暴击率 / +2.5% 暴伤）凭空消失；`heroPower` 又只读角色基础行 + 1 级 0 突的武装，于是角色升级、武器升级、武装突破都推不动战力。现在按客户端注释的公式（`8c78c6be…:1069`）分段累计，各突等级区间取 `WeaponBreak.breakGrowLimit`（整表，`data/weaponbreak.ts` 没这列），`heroPower` 改吃角色成长属性与穿戴武装的真实等级/突破 |
 | 真机前的前置 | **先备料**（假服是真扣费，没料就每条 `deny`，现象像"没实现"）：`1090101`/`1090102`/`1030011`/`1030012`/`1090001` + 金币，见 [存档修改「给武装 B2 的真机轮备料」](README-存档修改.md) |
 | 运行中的假服 | 若已在跑，它加载的是**旧 `dist`**；用新逻辑要 `./run.sh` 重启，**会断开已连接的客户端** |
 
 ---
 
-## 7. 本档（B5）落了什么 / 下一档（B6）
+## 7. 本档（B6）落了什么 / 往下还欠什么
 
-### 7.1 B5 任务/活跃度五条（2026-11-01，已做）
+### 7.1 B6 签到/七日（2026-11-02，已做）
+
+- **新建 [`src/sign.ts`](../src/sign.ts)**（166 行，只 import `tbl/proto/tasks/save`，不碰 GS 帧、不 import
+  `econ/payloads`）：月签到（`signin` 块）、七日签到（`bg` 块）、bingo 格子、以及登录那份
+  `FirstThoughtInfo`。与 B5 同一套免环规矩，**初心者的领奖不在这里** —— 复用 `tasks.claimTask`。
+- **一本账**：`Task_Xls` 里 `missionType==4` 恰好 56 行（`400001..400056`），`3301` 领的就是这 56 行，
+  所以 `3301/3302/3303/3306/3308` 读写的是**同一份** `tasks.passedTasks`，bingo 门槛
+  （`GetHaveFinishTasknum() >= SignBingo.num`，`num` 8/16/…/56）与登录 `taskInfo=48` 天然对得上，
+  不会出现"这条在 A 账领过、在 B 账没领"。
+- **主要工作量确实在登录包**：新发 `isFirstThoughtAllOver=43` + `firstThoughtInfo=44`（这一整份
+  由 `bg` + `tasks.passedTasks` 现算，此前 44 压根没发；缺 44 → `UIBeginner7DataMgr.m_FirstThoughtInfo`
+  是 nil，点初心者面板的格子当场崩），`monthSign=80` 与 `10005` 的 13 改用同一个 `signInfoBody`
+  （自测断言两处字节相同）。
+- **修掉三个老错**（都不是这一档新引入的，是审计时撞出来的）：`SignInfo.days=3` 是**待领格子数(0/1)**
+  而不是"本月第几天"（`todayIndex = GetSignedCount() + GetCanSignCount()`）；日/月界点原来用 UTC+8
+  自然零点与 UTC 月首，**跨 00:00–04:00 会多签一天或提前换月**，现统一走 `tasks.dayEdgeSec`（04:00）；
+  `10051` 以前只回一个空 `rewards`、**一件不发**，现在按 `SignMonth_Xls(param=月, times=第几格)` 真发。
+- **`10051` 永不 `deny`**（面板 `SetCanCloseUI(false)` 等回包，关不掉），已签过的那天照回原状；
+  三条的 `rewards` 字段客户端都不读，发奖一律 `ShowItem_Push{comeFrom=54 月签 / 55 七日 / 68 初心者 / 88 bingo}`。
+- **自检 +8 条（106→114）**：登录 43/44/80 齐发且四个 required 子字段全在、`days` 在已签时=0、
+  `3301/typeId=2` 的形状（`taskId`+`taskOverTime`+`isAllOver`）与 comeFrom 68 与落盘、拿日常任务 id 来领被拒、
+  门槛型（`400004` cond 1802）先拒后放、`3306` 的 7/8 拒与 8/8 放与重复拒、`10051` 推进与同日重发不再发奖、
+  `typeId=1` 推进与同日重发拒、月界单测（`2026-11-01 02:00` 还算 10 月）与 `rollMonth` 幂等。
+- **有意没做**（别当 bug 报）：`3307` 不接（handler 只 `SetFirstThoughtInfo`，不刷界面）；
+  `Task.timeUnlock` 不做服务端门槛（客户端按 `openTimeStamp` 自己算第几天）；`bg.redDot` 恒发存档值
+  （proto required、代码里没人读）；`typeId=1` 那条对应的 `UIBeginner7Days` 面板在客户端打不开
+  （它只是 `UIBeginner7DaysCtrl` 的一个 tab，唯一 opener 被注掉了）；能开的是 `UIBeginnerTask`。
+  全部客户端契约与行号见 [协议清单 §4.7](README-协议清单.md)。
+
+### 7.2 B5 任务/活跃度五条（2026-11-01，已做）
 
 - **新建 [`src/tasks.ts`](../src/tasks.ts)**（329 行，只 import `tbl/proto/save`，不碰 GS 帧、不 import
   `econ/payloads` —— 与 A5 的免环规矩一致，方向反过来：**`econ.ts` 调这里的 `bumpTask`**）：
@@ -156,7 +185,7 @@
 - **有意没做**（别当 bug 报）：后端观测不到的条件一律不发进度（巡逻 `2608`、周常 `1609/1621/1626/3102`
   玩法未实现）、活动任务分支没接、`3304` 的 `errCode` 恒 0。
 
-### 7.2 B4 挂机六条（2026-11-01，已做）
+### 7.3 B4 挂机六条（2026-11-01，已做）
 
 - **新建 [`src/hangup.ts`](../src/hangup.ts)**（220 行，只 import `tbl/econ/save/proto`，不碰 GS 帧、不 import
   `payloads.ts` —— 与 A5 立的免环规矩一致）：会话状态机（`refreshState` 1→2、`doneTimes` 与客户端同一个
@@ -175,7 +204,7 @@
 - **有意没做**（别当 bug 报）：不校验"今日进本次数用完"（`todayAttackNum` 只累加）、不发 `leaderExpReward`、
   不给首通/三星、扫荡不查扫荡券、加速不扣道具。
 
-### 7.3 B3 通关结算（2026-11-01，已做）
+### 7.4 B3 通关结算（2026-11-01，已做）
 
 - `3005 OverTrainLevel` **新接**、`3004 OverMainLevel` **重构**：胜利时读 `MainLevel/TrainLevel.userExpReward`
   → `econ.addExp` 沿 `PlayerGrow` 曲线连升（升级顺带补 `addPower` 那笔体力）→ 落 `save.json`
@@ -191,22 +220,19 @@
   服务端发进度反而会压掉它算出来的数（[协议清单 §4.6](README-协议清单.md) 第 2 条）；
   ⑤ `lastBattle`/`settledUniqueId` 是内存态，**假服重启即清零**，重启前未结算的那一场只回包不写档。
 
-### 7.4 下一档（B6）范围预告
+### 7.5 往下还欠什么
 
-签到/七日两条 —— 这一档的**主要工作量其实在登录包**，不在那两条 handler 上：
+第一档 28 条到 B6 **齐了**（判据是 `selftest.mjs` 的 `TIER1_DONE`）。剩下按
+[待补功能](README-待补功能.md) 排：
 
-- `3301 FirstThought`（`FirstThought{typeId=1, taskId=2}` → `FirstThought_S2C`）：`typeId`
-  1=签到、2=初心者任务、3=阅读红点；`bg` 存档块与 `FirstThoughtInfo` 是 1:1（`signNumber=1`、
-  `redDot=2`(required bool)、`signTimeStamp=3`、`openTimeStamp=4`、`signBingoList=5`）。
-- **登录 `PlayerLoginGetInfo_S2C.firstThoughtInfo=44` + `isFirstThoughtAllOver=43` 现在没发**，
-  `UIBeginner7DataMgr`（`a357…:851`）因此起不来 —— 七日面板是崩的，不是空的。这条不补，
-  `3301/3306` 接了也看不见效果。
-- `3306 SignBingoReward{signId=1}`：handler 只做 `UIBeginner7DataMgr.ADDSignBingoFinish(msg.signId)`，
-  `signId` 只认 1..7；服务端真值写进 `FirstThoughtInfo.signBingoList=5`。达标门槛按
-  `SignBingo` 表的 `num`（已完成初心者任务数 ≥ `num`，实测 8..56，`award` 802000..802006）。
-- 七日签到那条走 `10051 GetSignReward`（已接，但是骨架：能领、不算真进度），
-  `comeFrom` 用 `ActionEnum` 里的 `DaySign=55` / `MonthSign=54` / `FirstThoughtTask=68` / `SignBingo=88`。
-- 照 B5 的老办法：接之前先核 C2S 到底带了什么字段、客户端 handler 到底读哪几个；
-  发奖一律 `ShowItem_Push`（这些 `_S2C` 里的 `rewards` 客户端不读），并登记进 `TIER1_DONE`。
-- **B6 之后第一档 28 条就齐了**，剩下的按 [待补功能](README-待补功能.md) 排：真机打勾表（#27）、
-  服务器时间/三叶池 `3008`（#17）、商店/邮件/战令那批"合法空包"。
+- **真机打勾表**（#27）：B3/B4/B5/B6 四档的判定点一条都没在真机上跑过（B1/B2 只绿了一半，见 §6）
+  —— 尤其 B4 的挂机时长口径、
+  B5 的"两本账"进度显示、B6 的初心者面板（主城"新手任务"）能不能开不崩（这三条各自牵一处客户端读取路径，
+  离线自测只能证明字节对，证明不了界面认）。
+- **服务器时间来源与三叶池 `3008`**（#17）：还欠一次定性。
+- **"合法空包"那批要补真数据**：战令 `890105`、肉鸽 `9300009`、元素塔 `9400004`、
+  结算回执 `11018`、活动 `21015`（[协议清单 §4](README-协议清单.md) 里标 ⚠️ 的那几行）。
+- **抽卡**：`2000` 每次独立按 `LotteryInstance→Drop→DropSet→DropGroup`  roll，**没有任何保底计数**
+  （真服的歪曲保底/硬保底那一套没实现，也不落盘）。
+- **战场内 `12xxx` 实时同步**（切角色 `12005/12010`、阶段切换 `12008/12009`、伤害广播 `12014`…）
+  整块没接：一场战斗从头到尾由客户端本地跑，我们只给 `11028` 的 `battleEnterInfo` 和 `11018` 的结算口。
