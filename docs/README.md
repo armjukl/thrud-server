@@ -369,7 +369,7 @@ fuser -k -n tcp 9443 19005
 ```bash
 npm ci                   # 安装 TS 依赖（离线可从 fakeserverts/node_modules 拷一份）
 npm run build            # tsc -> dist/
-npm run selftest         # 78 条：KCP/帧/网关/HTTP 桩/战斗/抽卡/整表/存档/经济/技能/proto required/B1 养成/启停/管理面/安卓壳/工具链
+npm run selftest         # 114 条：KCP/帧/网关/HTTP 桩/战斗/抽卡/整表/存档/经济/技能/proto required/B1 养成/启停/管理面/安卓壳/工具链/B3~B6 真逻辑
 ```
 
 前提：`res/` 已就位（`res/phone/`、`res/apk/`）。
