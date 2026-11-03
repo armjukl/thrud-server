@@ -6,6 +6,7 @@
 // 同一个报文会落两遍盘、日志翻倍, 那是比起不来更难查的故障。
 import http from "node:http";
 import https from "node:https";
+import os from "node:os";
 
 import { config } from "./config.js";
 import { log, record, summary, ensureDirs, hex } from "./logger.js";
@@ -45,7 +46,11 @@ export interface OfflineStatus {
   capture: string;
   packets: number;
   node: string;
+  /** 内存读数, 口径与 android/probe.js 一致(都取整 MB), 好把屏上的数和探针那轮直接比。 */
   rssMb: number;
+  heapMb: number;
+  sysTotalMb: number;
+  sysFreeMb: number;
 }
 
 export interface OfflineServer {
@@ -132,6 +137,9 @@ export function createOfflineServer(): OfflineServer {
       packets: summary().packets,
       node: process.version,
       rssMb: Math.round(process.memoryUsage().rss / 1048576),
+      heapMb: Math.round(process.memoryUsage().heapUsed / 1048576),
+      sysTotalMb: Math.round(os.totalmem() / 1048576),
+      sysFreeMb: Math.round(os.freemem() / 1048576),
     }),
   };
 }

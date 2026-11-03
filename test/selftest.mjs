@@ -476,6 +476,10 @@ await check('pack+node18: 按手机布局起假服(铺盘/管理面/HTTPS/存档
     const st = await (await fetch(`http://127.0.0.1:${A}/api/status`)).json();
     assert.equal(st.running, true, '管理面要说假服在跑');
     assert.equal(st.node, 'v18.20.4', '实启必须与 nodejs-mobile 同版本, 否则这条证据不算数');
+    // 状态卡的内存读数(口径同 android/probe.js): 手机屏上就靠这几个数判断有没有漏
+    assert.ok(Number.isInteger(st.rssMb) && st.rssMb > 40 && st.rssMb < 400, `RSS 该在合理区间, 读到 ${st.rssMb}MB`);
+    assert.ok(Number.isInteger(st.heapMb) && st.heapMb > 10 && st.heapMb < st.rssMb, `heap 该小于 RSS: rss=${st.rssMb} heap=${st.heapMb}`);
+    assert.ok(st.sysTotalMb > 0 && st.sysFreeMb > 0 && st.sysFreeMb <= st.sysTotalMb, `系统内存读数要在理: ${st.sysFreeMb}/${st.sysTotalMb}MB`);
     assert.equal(st.gateway.port, K);
     assert.equal(st.logs, path.join(dataDir, 'data', 'logs'), '日志/存档都得落在 --data 指定的数据目录');
     assert.equal(readFile(path.join(dataDir, 'data', 'save.json')).equals(readFile(SAVE_FILE)), true, '铺出来的存档要和仓库那份逐字节一致');

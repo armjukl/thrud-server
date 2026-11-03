@@ -109,7 +109,7 @@ h4{margin:14px 0 6px;color:#8a97a6;font-size:12px;text-transform:uppercase;lette
       handlers: s.handlers.join(', ') || '(仅兜底)',
       save: s.save ? s.save.bytes + 'B · ' + s.save.mtime : '无',
       node: s.node + ' · 已起 ' + Math.round(s.uptimeSec / 60) + ' 分',
-      rss: s.rssMb + ' MB',
+      rss: s.rssMb + ' MB · heap ' + s.heapMb + ' MB · 系统 ' + s.sysFreeMb + '/' + s.sysTotalMb + ' MB 可用',
       logs: s.logs,
       tables: s.tables || '无'
     };
