@@ -2,7 +2,7 @@
 """运行时 IL2CPP dump 驱动: 附着已跑的斯露德, 写出 dump.cs 风格文件."""
 import frida, json, os, sys, time
 
-REMOTE = os.environ.get("SLD_FRIDA", "<YOUR_SERVER_IP>:27049")
+REMOTE = os.environ.get("SLD_FRIDA", "127.0.0.1:27049")
 OUT = os.environ.get("SLD_DUMP", "/home/qkzx/offline/sld/dump/il2cpp_runtime_dump.cs")
 HERE = os.path.dirname(os.path.abspath(__file__))
 

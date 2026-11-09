@@ -656,7 +656,7 @@ await check('gadget: sockaddr 端口改写(443->9443)字节对且改出来的端
   // 不该动的一个都不许动
   const untouched = [
     [mk('127.0.0.1', 8080), rule, '端口不是 from'],
-    [mk('<YOUR_SERVER_IP>', 443), rule, 'IP 不是我们的'],
+    [mk('203.0.113.10', 443), rule, 'IP 不是我们的'],
     [mk('127.0.0.1', 443, 10), rule, 'AF_INET6 不碰'],
     [mk('127.0.0.1', 443), null, 'tunnel 模式规则是 null'],
   ];

@@ -26,7 +26,7 @@ import time
 
 import frida
 
-REMOTE = "<YOUR_SERVER_IP>:27049"   # 手机 frida-server, 经 frpc 暴露
+REMOTE = "127.0.0.1:27049"   # 手机 frida-server, 经 frpc 暴露
 
 JS = r"""
 var p = PROMISE_PATH;

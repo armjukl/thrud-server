@@ -7,7 +7,7 @@
 """
 import frida, json, os, sys, time, datetime
 
-REMOTE = os.environ.get("SLD_FRIDA", "<YOUR_SERVER_IP>:27049")
+REMOTE = os.environ.get("SLD_FRIDA", "127.0.0.1:27049")
 PKG = "com.wth.thrud.bilibili"
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.environ.get("SLD_OUT", os.path.join(HERE, "..", "..", "frida_dump"))

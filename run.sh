@@ -11,7 +11,7 @@ npm run --silent build
 export SLD_TLS="${SLD_TLS:-1}"
 export SLD_HTTP_PORT="${SLD_HTTP_PORT:-9443}"
 export SLD_KCP_PORT="${SLD_KCP_PORT:-19005}"
-export SLD_PUBLIC_HOST="${SLD_PUBLIC_HOST:-<YOUR_SERVER_IP>}"
+export SLD_PUBLIC_HOST="${SLD_PUBLIC_HOST:-127.0.0.1}"
 export SLD_GACHA_FORCE_QUALITY="${SLD_GACHA_FORCE_QUALITY:-0}"
 export SLD_GACHA_FORCE_TYPE="${SLD_GACHA_FORCE_TYPE:-}"
 exec node dist/index.js

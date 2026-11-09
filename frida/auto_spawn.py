@@ -8,7 +8,7 @@
   4) 游戏崩溃 / 退出后自动重开, 保证 hook 一直在.
 
 环境变量:
-  SLD_FRIDA          远端 frida server (默认 <YOUR_SERVER_IP>:27049)
+  SLD_FRIDA          远端 frida server (默认 127.0.0.1:27049)
   SLD_AGENTS         spawn 阶段就要挂的脚本 (逗号分隔, 支持绝对路径)
   SLD_AGENTS2        resume 之后 DELAY2 秒再挂的脚本
   SLD_DELAY2         默认 14
@@ -29,7 +29,7 @@ import time
 
 import frida
 
-REMOTE = os.environ.get("SLD_FRIDA", "<YOUR_SERVER_IP>:27049")
+REMOTE = os.environ.get("SLD_FRIDA", "127.0.0.1:27049")
 PKG = "com.wth.thrud.bilibili"
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENTS = [a for a in (os.environ.get("SLD_AGENTS") or "").split(",") if a]

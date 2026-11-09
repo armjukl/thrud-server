@@ -548,8 +548,8 @@ export function playerLoginGetInfoS2C(): Buffer {
     // serverInfos=14 (repeated ServerInfo): 客户端 NetWorkManager 需要 type=3 聊天服, 否则
     // GetServerInfoByType(3) 返回 nil -> NetWorkManager:56 报错 (每 15s 一次).
     pb.bfield(14, pb.concat(
-      pb.vfield(1, 1), pb.vfield(2, 2), pb.sfield(3, "<YOUR_SERVER_IP>"), pb.vfield(4, 19005), pb.vfield(5, 1),
-      pb.vfield(1, 2), pb.vfield(2, 3), pb.sfield(3, "<YOUR_SERVER_IP>"), pb.vfield(4, 19005), pb.vfield(5, 1),
+      pb.vfield(1, 1), pb.vfield(2, 2), pb.sfield(3, config.server.publicHost), pb.vfield(4, 19005), pb.vfield(5, 1),
+      pb.vfield(1, 2), pb.vfield(2, 3), pb.sfield(3, config.server.publicHost), pb.vfield(4, 19005), pb.vfield(5, 1),
     )),
     // weaponInfos=32 (repeated WeaponInfo): 式仗实例集合(与 GetWeaponListPage 同源).
     ...weaponInstances(s).map((w) => pb.bfield(32, weaponInfoFromInst(s, w))),

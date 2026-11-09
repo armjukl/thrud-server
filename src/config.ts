@@ -111,7 +111,7 @@ export const config = {
     buildVersion: 1338,
     channel: "bilibili",
     /** 下发给客户端的公网地址(serverUrlData / 列表 / 热更 URL) */
-    publicHost: str(process.env.SLD_PUBLIC_HOST, "<YOUR_SERVER_IP>"),
+    publicHost: str(process.env.SLD_PUBLIC_HOST, "127.0.0.1"),
     /** 局域网回连地址; 留空 = 127.0.0.1 */
     lanIp: str(process.env.SLD_LAN_IP, "127.0.0.1"),
   },
